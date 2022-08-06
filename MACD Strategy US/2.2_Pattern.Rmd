@@ -1,0 +1,235 @@
+
+# Initialization
+```{r}
+rm(list=ls())
+
+library(scales)
+
+# ----------------------------------------------------------------------------------------------
+# compute EMA
+ema = function(price,n) {
+  
+  # initialize price with SMA
+  price[n] = mean(price[1:n])
+  
+  # loop through all time steps, and compute step-wise ema
+  for (i in (n+1):length(price)) {
+    price[i] = price[i]*2/(n + 1) + price[i-1]*(1-2/(n + 1))
+  }
+  
+  # set initial prices to NaN since you cannot compute it
+  price[1:(n-1)] = NA
+  
+  return(price)
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# read nasdaq stock
+read_nasdaq = function(file_path) {
+  
+  dat       = read.csv(paste0(file_path,".csv"),sep=",")
+  dat$date  = as.Date(dat$date,format="%Y-%m-%d")
+  dat$open  = as.numeric(dat$open)
+  dat$high  = as.numeric(dat$high)
+  dat$low   = as.numeric(dat$low)
+  dat$close = as.numeric(dat$close)
+  
+  return(dat)
+
+}
+
+# ----------------------------------------------------------------------------------------------
+# plot selected region
+plot_stock = function(ticker_symbol,ticker_info,data,emas=c(),save=FALSE,savename="") {
+  
+  if (save) png(paste0(savename,".png"), width = 1500, height = 750)
+
+  # set up plot area
+  layout(matrix(1:2,2,1),heights=c(2.5,1))
+  
+  # # # Main Plot
+  # set up plot range
+  xrange = range(data$date)
+  yrange = range(c(data$high,data$low),na.rm=TRUE)
+
+  # initialize plot with margin sizes
+  par(mar=c(1,4,1,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange,xlab="",ylab="Price (USD)",xaxt="n",yaxt="n")
+
+  # add ticker symbol
+  text(diff(xrange)/2+xrange[1],sum(yrange)/2,labels=ticker_symbol,cex=4,col=alpha("black",0.1))
+  
+  # label axis
+  axis(2,at=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=10^(floor(log10(yrange[2]))-1)),-(floor(log10(yrange[2]))-1)),
+       labels=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=10^(floor(log10(yrange[2]))-1)),-(floor(log10(yrange[2]))-1)),las=2)
+  
+  # moving average
+  if (length(emas) > 0) {
+    cols = c("red","orange","aquamarine","blue","purple","black")
+    for (i in 1:length(emas)) {
+      if(nrow(data) > emas[i]) {
+        lines(data$date,ema(data$close, emas[i]),col=cols[i],lwd=2)
+      }
+    }
+  }
+  
+  # construct candlesticks
+  colors = ifelse(data$close >= data$open,"forestgreen","tomato")
+  segments(x0  = data$date, y0 = data$low
+          ,x1  = data$date, y1 = data$high
+          ,col = colors, lwd=1
+  )
+  rect(xleft   = data$date-0.3
+      ,ybottom = ifelse(data$close >= data$open,data$open,data$close)
+      ,xright  = data$date+0.3
+      ,ytop    = ifelse(data$close >= data$open,data$close,data$open)
+      ,col     = colors,border=colors
+  )
+  
+  # # # Volume Plot
+  # set up plot range
+  yrange2 = range(c(0,data$volume/1e6),na.rm=TRUE)
+
+  # initialize plot with margin sizes
+  par(mar=c(6,4,0,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange2,xlab="",ylab="Vol (M)",xaxt="n",las=1)
+  
+  # label axis
+  axis(1,at=seq(xrange[1],xrange[2],by=25),
+     labels=seq(xrange[1],xrange[2],by=25),las=2)
+
+  # add volume
+  rect(xleft   = data$date-0.5
+      ,ybottom = 0
+      ,xright  = data$date+0.5
+      ,ytop    = data$volume/1e6
+      ,col     = colors,border=NA
+  )
+  
+  # add ticker symbol
+  text(xrange[1],yrange2[2]*0.9,labels=ticker_info,cex=1,col="blue",pos=4)
+  
+  if (save) dev.off()
+
+}
+```
+
+
+
+# Load NASDAQ Ticker List and Pre-Process
+```{r}
+# --- set paths -------------------------------------------------------------------- 
+path_database = "C:/Users/Administrator/Desktop/nasdaq stocks/"
+path_image    = "C:/Users/Administrator/Desktop/temp/"
+# ----------------------------------------------------------------------------------
+
+# load NASDAQ database
+nasdaq = read.csv("NASDAQ.csv",sep=",",stringsAsFactors=FALSE)
+
+# define cap ranges
+ranges   = c("-","M","B","T")
+ranges_n = c(NA,1e6,1e9,1e12)
+
+# process market cap values
+cap_val  = as.numeric(sapply(nasdaq$Cap,function(x) substr(x,1,nchar(x)-1)))
+cap_size = unname(sapply(nasdaq$Cap,function(x) substr(x,nchar(x),nchar(x))))
+
+nasdaq$N_cap = unname(sapply(cap_size,function(x) ranges_n[ranges==x]))*cap_val
+
+# process market float values
+float_val  = as.numeric(sapply(nasdaq$Float,function(x) substr(x,1,nchar(x)-1)))
+float_size = unname(sapply(nasdaq$Float,function(x) substr(x,nchar(x),nchar(x))))
+
+nasdaq$N_float = unname(sapply(float_size,function(x) ranges_n[ranges==x]))*float_val
+
+# add string to summarize stock
+nasdaq$info = sprintf("Market Cap %s, Float %s", nasdaq[,c("Cap")], nasdaq[,c("Float")])
+```
+
+
+
+# Plot 1 Ticker
+```{r}
+# --- define ticker ----------------------------------------------------------------
+t = "BLNK"
+# ----------------------------------------------------------------------------------
+
+# read data
+df = read_nasdaq(paste0(path_database,t))
+
+# plot stock
+plot_stock(ticker_symbol = t
+          ,ticker_info   = nasdaq$info[nasdaq$Symbol==t]
+          ,data          = df[max(c(nrow(df)-500,1)):nrow(df),]
+          #,data          = df[1:nrow(df),]
+          )
+```
+
+
+
+# Plot and Save All Tickers
+```{r}
+for (i in 1:nrow(nasdaq)) {
+  
+  # ticker
+  t = nasdaq$Symbol[i]
+  
+  # load data
+  t_df = read_nasdaq(paste0(path_database,t))
+  
+  # save images of stock price action, keep price action leading up to it
+  plot_stock(ticker_symbol = t
+            ,ticker_info   = nasdaq$info[nasdaq$Symbol==t]
+            ,data          = t_df
+            ,emas          = c(20,50,100,200)
+            ,save     = TRUE
+            ,savename = paste0(path_image,t)
+            )
+  
+}
+```
+
+
+# Apply Simple Condition and Visualize
+```{r}
+# visualize defined patterns
+for (i in 1:nrow(nasdaq)) {
+  
+  # ticker
+  t = nasdaq$Symbol[i]
+  
+  # load data
+  t_df = read_nasdaq(paste0(path_database,t))
+  
+  # find XX month return
+  l          = nrow(t_df)
+  #return_1mo = c(rep(0,21), (t_df$close[22:l] - t_df$close[1:(l-21)])/t_df$close[1:(l-21)])*100
+  return_3mo = c(rep(0,63), (t_df$close[64:l] - t_df$close[1:(l-63)])/t_df$close[1:(l-63)])*100
+  
+  # find times when the stock went up more than 10% in XX months
+  ind = which(return_3mo >= 10)
+  
+  # filter out indices which are close to eachother
+  ind = c(0,ind)
+  ind = ind[c(0,diff(ind)) > 5]
+  
+  # plot return graph with markers at the places where the returns are
+  #plot(t_df$close,type="l")
+  #points(ind,t_df$close[ind],col="red")
+  
+  # save images of stock price action, keep price action leading up to it
+  for (ii in ind) {
+    plot_stock(ticker_symbol = t
+              ,ticker_info   = nasdaq$info[nasdaq$Symbol==t]
+              ,data          = t_df[max(c(ii-63,1)):ii,]
+              ,emas          = c() #c(20,50,100,200)
+              ,save     = TRUE
+              ,savename = paste0(path_image,t,"_",ii)
+              )
+  }
+  
+}
+
+```
+

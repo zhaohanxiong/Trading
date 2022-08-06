@@ -1,0 +1,311 @@
+
+# helper functions
+```{r}
+rm(list=ls())
+#setwd("C:/Users/zxio506/OneDrive/Assets/Securities/Trading Stocks")
+
+# rolling cumulative return moving average
+rcma = function(x,n) {
+  
+  n     = n - 1
+  rma_x = (x[1:n]-x[1])/x[1]
+
+  for (i in seq(1, length(x)-n)) {
+    rma_x = c(rma_x, (x[i+n]-x[i])/x[i])
+  }
+  
+  return(rma_x*100)
+
+}
+
+# compute location of cross over
+crossover = function(x1,x2) {
+  
+  # find max time steps
+  l = max(c(length(x1),length(x2)))
+  
+  # duplicate values if only singular numeric value is provided
+  if (length(x1) == 1) x1 = rep(x1,l)
+  if (length(x2) == 1) x2 = rep(x2,l)
+  
+  # find which indices are true, if NA then set as false. x1 was more, now is less
+  cross_ind = c(FALSE,x1[1:(l-1)] > x2[1:(l-1)] & x1[2:l] < x2[2:l])
+  cross_ind[is.na(cross_ind)] = FALSE
+  
+  return(cross_ind)
+  
+}
+```
+
+# Load all important info (takes a while)
+```{r}
+# important pairwise info
+out1 = read.csv("1 - win rates.csv",header=TRUE)
+row.names(out1) = out1$X
+out1 = out1[,-1]
+
+out2 = read.csv("2 - expecations.csv",header=TRUE)
+row.names(out2) = out2$X
+out2 = out2[,-1]
+
+out3 = read.csv("3 - correlation.csv",header=TRUE)
+row.names(out3) = out3$X
+out3 = out3[,-1]
+
+# path to stocks
+desktop_path = file.path(Sys.getenv("USERPROFILE"),"Desktop")
+
+# set up file paths for NYSE and NASDAQ
+f_nyse = list.files(file.path(desktop_path,"NYSE"))
+f_nasdaq = list.files(file.path(desktop_path,"NASDAQ"))
+
+# loop through both and compute number of rows for each individual stock
+nyse_n = rep(NA,length(f_nyse))
+nasdaq_n = rep(NA,length(f_nasdaq))
+
+for (i in 1:length(nyse_n)) {
+  nyse_n[i] = nrow(read.csv(file.path(desktop_path,"NYSE",f_nyse[i]),sep=","))
+}
+
+for (i in 1:length(nasdaq_n)) {
+  nasdaq_n[i] = nrow(read.csv(file.path(desktop_path,"NASDAQ",f_nasdaq[i]),sep=","))
+}
+
+# store names, rowname = stock, row content = number of samples
+nyse_n = data.frame(nyse_n)
+rownames(nyse_n) = gsub(".csv","",f_nyse)
+
+nasdaq_n = data.frame(nasdaq_n)
+rownames(nasdaq_n) = gsub(".csv","",f_nasdaq)
+```
+
+# Find Pairs To Trade
+```{r}
+median(out2[out3 >= 0.98], na.rm=TRUE)
+
+# get stocks with high overall correlations
+ind = which(out3 >= 0.98, arr.ind=TRUE)
+rownames(ind) = NULL
+
+# col 1 = NYSE, col 2 = NASDAQ
+pairs = cbind(rownames(out1)[ind[,1]], colnames(out1)[ind[,2]])
+
+# filter out stocks with small number of samples
+col1_n = nyse_n[pairs[,1],]
+col2_n = nasdaq_n[pairs[,2],]
+
+pairs = pairs[col1_n > 250 & col2_n > 250,]
+```
+
+# Simulate All Trades
+```{r}
+# store data
+out_ticker_base = c()
+out_ticker_comp = c()
+out_exchange    = c()
+out_ind_entry   = c()
+out_ind_exit    = c()
+out_date_entry  = c()
+out_date_exit   = c()
+out_price_entry = c()
+out_price_exit  = c()
+out_return      = c()
+
+# which exchange to trade
+key = 2 # 1 for NYSE trading, 2 for NASDAQ trading
+
+exchange = c("NYSE","NASDAQ")
+
+# loop through every ETF pair
+for (n in 1:nrow(pairs)) {
+  
+  # load data
+  etf_ny = read.csv(paste0(file.path(desktop_path,exchange[key]),"/",pairs[n,key],".csv"),header=TRUE,stringsAsFactors=FALSE,sep=",")
+  etf_nq = read.csv(paste0(file.path(desktop_path,exchange[3-key]),"/",pairs[n,3-key],".csv"),header=TRUE,stringsAsFactors=FALSE,sep=",")
+  
+  etf_ny$date = as.Date(etf_ny$date)
+  etf_nq$date = as.Date(etf_nq$date)
+
+  # normalize number of rows
+  if (nrow(etf_ny) > nrow(etf_nq)) {
+    etf_ny = etf_ny[(nrow(etf_ny)-nrow(etf_nq)+1):nrow(etf_ny),]
+    etf_nq = etf_nq[(nrow(etf_nq)-nrow(etf_ny)+1):nrow(etf_nq),]
+  } else {
+    etf_nq = etf_nq[(nrow(etf_nq)-nrow(etf_ny)+1):nrow(etf_nq),]
+    etf_ny = etf_ny[(nrow(etf_ny)-nrow(etf_nq)+1):nrow(etf_ny),]
+  }
+  
+  # compute cumulative prices
+  rn       = 5
+  cum_nz   = rcma(etf_ny$close,rn) # nz = base stock to trade
+  cum_id   = rcma(etf_nq$close,rn) # id = stock to compare against
+  cum_diff = cum_id - cum_nz
+
+  # higher filter
+  rn2       = 22
+  cum_nz2   = rcma(etf_ny$close,rn2)
+  cum_id2   = rcma(etf_nq$close,rn2)
+  cum_diff2 = cum_id2 - cum_nz2
+  
+  # entry indices
+  ind = which(crossover(1.5,cum_diff) & cum_diff2 > 0.5)                # ********** TUNENABLE x2
+  
+  # loop through every trade and apply strategy
+  for (i in ind) {
+
+    # compute corrleation in this period, and skip if correlation unfavourable
+    if (i >= 50) {
+      cor_i = cor.test(etf_ny$close[max(1,(i-100)):i],etf_nq$close[max(1,(i-100)):i])$estimate
+      if (cor_i > 0.5) next # filter if high correlation (indicates not much arbitrage)
+    } else {
+      next
+    }
+
+    # set entry price
+    price_entry = etf_ny$close[i]
+    
+    # exit criteria
+    ind_exit = crossover(cum_diff[i:length(cum_diff)],-1.0)             # ********** TUNENABLE
+    ind_exit = which(ind_exit)[1] + i - 1
+
+    # if no exit then skip trade
+    if (is.na(ind_exit)) next
+
+    # compute exit price
+    price_exit = etf_ny$close[ind_exit]
+    
+    # compute return
+    return = (price_exit - price_entry)/price_entry*100
+
+    # store outputs
+    out_ticker_base = c(out_ticker_base, pairs[n,key])
+    out_ticker_comp = c(out_ticker_comp, pairs[n,3-key])
+    out_exchange    = c(out_exchange,    exchange[key])
+    out_ind_entry   = c(out_ind_entry,   i)
+    out_ind_exit    = c(out_ind_exit,    ind_exit)
+    out_date_entry  = c(out_date_entry,  as.character(etf_ny$date[i]))
+    out_date_exit   = c(out_date_exit,   as.character(etf_ny$date[ind_exit]))
+    out_price_entry = c(out_price_entry, price_entry)
+    out_price_exit  = c(out_price_exit,  price_exit)
+    out_return      = c(out_return,      return)
+    
+  }
+  
+}
+
+# store all trades
+out = data.frame(ticker_base = out_ticker_base,
+                 ticker_comp = out_ticker_comp,
+                 exchange    = out_exchange,
+                 ind.entry   = out_ind_entry,
+                 ind.exit    = out_ind_exit,
+                 date.entry  = as.Date(out_date_entry),
+                 date.exit   = as.Date(out_date_exit),
+                 price.entry = out_price_entry,
+                 price.exit  = out_price_exit,
+                 return      = out_return)
+
+# combine tickers into one column
+out$ticker = paste0(out$ticker_base,"_",out$ticker_comp)
+
+# apply comission
+#out$return = out$return - 0.5
+out = out[!is.na(out$return),]
+out$outcome = ifelse(out$return > 0, TRUE, FALSE)
+
+# Summarize
+ls = list()
+ls[[1]] = sprintf("---------------------------")
+ls[[2]] = sprintf("Avg Win:  %0.2f%%", mean(out$return[out$outcome]))
+ls[[3]] = sprintf("Avg Loss: %0.2f%%", mean(out$return[!out$outcome]))
+ls[[4]] = sprintf("Win Rate: %0.1f%%", sum(out$outcome)/nrow(out)*100)
+ls[[5]] = sprintf("Expected: %0.2f%%", sum(out$outcome)*mean(out$return[out$outcome])/nrow(out) + 
+                                           sum(!out$outcome)*mean(out$return[!out$outcome])/nrow(out))
+ls[[6]] = sprintf("Avg Hold Period: %0.1f Days", mean(out$ind.exit-out$ind.entry))
+cat(paste0(ls,collapse="\n"))
+
+# Summarize Tickers By Individual Win Rates
+# temp = aggregate(out[,c(10,13)], by = list(out$ticker,out$exchange), FUN = mean)
+# temp = temp[order(temp$Group.1),]
+# temp$n = table(out$ticker)
+# View(temp)
+```
+
+
+
+
+
+
+
+
+
+
+# Simulate Portfolio
+```{r}
+# sort by date and define new dataframe, with coutners
+out_real          = out[order(out$date.entry),]
+out_real$real     = FALSE
+out_real$active   = FALSE
+out_real$n_active = NA
+max_active        = 10
+
+for (i in 1:nrow(out_real)) {
+
+  # exit previous positions which has passed
+  out_real$active[out_real$date.entry[i] > out_real$date.exit] = FALSE
+  
+  # if there are still position slots available
+  if (sum(out_real$active) < max_active) {
+    out_real$active[i] = TRUE
+    out_real$real[i]   = TRUE
+  }
+
+  # calcualte total number of active trades
+  out_real$n_active[i] = sum(out_real$active)
+  
+}
+
+# filter trades executed, and adjust return per trade due to position sizing
+out_real = out_real[out_real$real,]
+out_real$return = out_real$return/max_active
+
+par(mfrow=c(2,1)) 
+
+# plot portfolio performance
+cum_port = cumprod(out_real$return/100+1)
+
+plot(out_real$date.entry,cum_port,type="l",log="y")
+abline(h=c(1:10,seq(10,100,by=10)),lty=2, col="grey50")
+abline(v=as.Date(paste0(2009:2025,"-01-01")),lty=2, col="grey50")
+lines(out_real$date.entry,cum_port,col="blue",lwd=2)
+#points(out_real$date.entry,cum_port,col="black",pch=21)
+
+# plot annual return
+yearly_return = c()
+for (i in 2010:2021) {
+  
+  year_i = as.Date(paste0(i,"-01-01"))
+  start_i = cum_port[which(out_real$date.entry >= year_i)[1]]
+  end_i = cum_port[tail(which(out_real$date.entry <= (year_i+366)),1)]
+  return_i = (end_i - start_i)/start_i*100
+  yearly_return = c(yearly_return,return_i)
+  
+}
+
+names(yearly_return) = 2010:2021
+barplot(yearly_return)
+abline(h=seq(round(min(yearly_return),-1),round(max(yearly_return),-1),by=10),lty=2,col="grey50")
+
+# Summarize
+ls = list()
+ls[[1]] = sprintf("---------------------------")
+ls[[2]] = sprintf("Win Rate: %0.1f%%",           sum(out_real$outcome)/nrow(out_real)*100)
+ls[[3]] = sprintf("Expected: %0.2f%%",           (sum(out_real$outcome)*mean(out_real$return[out_real$outcome])/nrow(out_real) + 
+                                                   sum(!out_real$outcome)*mean(out_real$return[!out_real$outcome])/nrow(out_real))*max_active)
+ls[[4]] = sprintf("Avg Hold Period: %0.1f Days", mean(out_real$ind.exit-out_real$ind.entry))
+ls[[5]] = sprintf("Trades Per Year: %0.0f",      sum(out_real$date.entry > (out_real$date.entry[nrow(out_real)]-365.25)))
+ls[[6]] = sprintf("Annualized Return: %0.1f%%",  ((1+tail(cum_port,1))^
+                                                   (365/as.numeric((out_real$date.exit[nrow(out_real)]-out_real$date.entry[1])))-1)*100)
+ls[[7]] = sprintf("Median Annual Return: %0.1f%%", median(yearly_return))
+cat(paste0(ls,collapse="\n"))
+```

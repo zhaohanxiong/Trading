@@ -1,0 +1,235 @@
+
+Findings, validate if MACD really crosses in 1 day problem:
+
+- top 7 guarantees 99% chance of crossover in the next 1 day
+- >50% in the top 7 has cross next day
+- MACD diff value does not impact whether really cross or not
+- For any most likely "N"th potential macd cross, there is ~25% there is no macd cross the next day
+
+
+# Compute Stats For MACD Cross Over
+```{r}
+rm(list=ls())
+source("Utils.R")
+
+# set up stocks
+nyse_stocks   = read.csv("NYSE.csv")
+nasdaq_stocks = read.csv("NASDAQ.csv")
+exchange      = c(rep("NYSE",nrow(nyse_stocks)),rep("NASDAQ",nrow(nasdaq_stocks)))
+
+stocks = rbind(nyse_stocks[c("Symbol","Data","Cap","Float")],nasdaq_stocks[c("Symbol","Data","Cap","Float")])
+stocks$exchange = exchange
+
+# store values
+macd_mat   = array(rep(NA,nrow(stocks)*8000*3),dim=c(nrow(stocks),8000,3))
+small_data = c()
+
+# read stock data
+for (i in 1:nrow(stocks)) {
+  
+    print(stocks$Symbol[i])
+  
+    # check if stock data exists
+    if (sum(paste0(stocks$Symbol[i],".csv") == 
+        list.files(file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks")))) == 0) next
+  
+    # load stock
+    path = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks"))
+    df   = read.csv(paste0(path,"/",stocks$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+    
+    # skip if too short
+    if (nrow(df) < 30) {
+      small_data = c(small_data,stocks$Symbol[i])
+      next
+    }
+    
+    # compute ema and macd entries
+    macd12_26_9 = macd(df$Close, 12, 26, 9)
+    macd_cross  = crossover(macd12_26_9$signal,macd12_26_9$MACD) & macd12_26_9$MACD < 0
+    
+    # store values
+    macd_mat[i, (8000 - length(macd_cross) + 1):8000,1] = macd_cross
+    macd_mat[i, (8000 - length(macd_cross) + 1):8000,2] = macd12_26_9$signal
+    macd_mat[i, (8000 - length(macd_cross) + 1):8000,3] = macd12_26_9$MACD
+
+}
+
+# compute difference in MACD line and signal line
+MACD_diff = abs((macd_mat[,,2] - macd_mat[,,3])/macd_mat[,,3])
+MACD_diff[macd_mat[,,2] >= 0] = NA
+MACD_diff[macd_mat[,,3] >= 0] = NA
+MACD_diff[macd_mat[,,2] <= macd_mat[,,3]] = NA
+MACD_diff[!is.finite(MACD_diff)] = NA
+
+# write data
+#write.csv(macd_mat[,,1],file.path(Sys.getenv("USERPROFILE"),"Desktop","MACD_cross.csv"),row.names=FALSE)
+write.csv(MACD_diff,file.path(Sys.getenv("USERPROFILE"),"Desktop","MACD_diff.csv"),row.names=FALSE)
+```
+
+# Proportion of Most Likely Crossovers with MACD Crossover in 1 Day
+```{r}
+# function to find if there is a cross in 1 day, given the n'th closest MACD cross
+next_crosses = function(MACD_diff_matrix,n) {
+
+  colind = unlist(apply(MACD_diff_matrix,2,function(x) {
+                                                min_val = order(x,decreasing=FALSE)[n]
+                                                out = ifelse(length(min_val)==0,NA,min_val)
+                                                return(out)
+                                           }
+           ))
+  
+  crosses = sapply(1:(length(colind)-1),function(i) macd_mat[colind[i],i+1,1])
+  return(crosses)
+  
+}
+
+# initialize counters
+crosses   = rep(0,dim(MACD_diff)[2]-1)
+one_prob  = c()
+prob_prob = c()
+cum_prob  = c()
+
+# iterate through the top i'th in terms of minimum MACD/signal values
+for (i in 1:20) {
+  
+  crosses_temp = next_crosses(MACD_diff,i)
+  crosses = crosses + crosses_temp
+  
+  # probability for single "i"
+  one_prob = c(one_prob, sum(crosses_temp,na.rm=TRUE)/sum(!is.na(crosses_temp))*100)
+  
+  # probabilty given top "N", proportion of days actually contains MACD cross next day
+  prob_prob = c(prob_prob, mean(crosses/i,na.rm=TRUE)*100)
+  
+  # probability for cumulative 1 to "i"th
+  crosses_i = crosses >= 1
+  cum_prob  = c(cum_prob, sum(crosses_i,na.rm=TRUE)/sum(!is.na(crosses_i))*100)
+  
+}
+
+# find minimum macd diff for each day
+colind = unlist(apply(MACD_diff,2,function(x) sort(x,decreasing=FALSE)[1]))
+
+# macd diff for real crossovers
+crossover_diff = MACD_diff[,1:7999][macd_mat[,2:8000,1]==1]
+
+# setup subplots
+par(mfcol=c(2,2))
+
+# plot probabilities
+plot(cum_prob,main="Proportion of Cross in 1 Day Given the Top N Most Likely Crosses",
+     type="l",xlab="Top (N Most Likely)",ylab="Probability (%)",lwd=2,ylim=c(90,100))
+points(cum_prob,lwd=2)
+#lines(one_prob,col="grey",lwd=2)
+abline(h=1:100,col=alpha("red",0.5),lty=2,lwd=1)
+abline(v=1:i,col=alpha("orange",0.5),lty=2,lwd=1)
+
+# plot barplot, given top N most probable cross over, how many actually produce crossover
+names(prob_prob) = 1:20
+barplot(prob_prob,main="Given Top N Most Likely Cross, How Many Actually Cross in 1 Day",
+        xlab="Top (N Most Likely)",ylab="Probability (%)")
+abline(h=50,col=alpha("red",0.5),lty=2,lwd=1)
+
+# plot distribution of min values
+hist(colind,breaks=seq(0,max(colind,na.rm=TRUE)+0.0001,by=0.0001),xlim=c(0,0.04),
+     main="Distribution of MACD Diff Mostly Likely Before Cross",xlab="MACD Diff")
+abline(v=quantile(colind,probs=c(50,75,90,95,99,99.9)/100,na.rm=TRUE),lty=2,col=alpha("red",0.5),lwd=2)
+text(quantile(colind,probs=c(50,75,90,95,99,99.9)/100,na.rm=TRUE),700,
+     labels=c("50%","75%","90%","95%","99%","99.9%"),cex=1,col="red")
+
+# plot distribution of min values for actual crossovers
+hist(crossover_diff,breaks=seq(0,max(crossover_diff,na.rm=TRUE)+0.01,by=0.01),xlim=c(0,1),
+     main="Distribution of MACD Diff Before Real Cross",xlab="MACD Diff")
+abline(v=quantile(crossover_diff,probs=c(50,75,90,95,99,99.9)/100,na.rm=TRUE),lty=2,col=alpha("red",0.5),lwd=2)
+text(quantile(crossover_diff,probs=c(50,75,90,95,99,99.9)/100,na.rm=TRUE),50000,
+     labels=c("50%","75%","90%","95%","99%","99.9%"),cex=1,col="red")
+```
+
+# Find Number of Most Likely MACD Enty that is False
+```{r}
+fake_macd_entry_finder = function(N,i) {
+    
+  # find index of minimum row (stock) for current column (time)  
+  ind = order(MACD_diff[,i],decreasing=FALSE)[N]
+  
+  # check if stock data exists
+  if (sum(paste0(stocks$Symbol[ind],".csv") == 
+      list.files(file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[ind]," stocks")))) == 0) next
+
+  # load stock
+  path = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[ind]," stocks"))
+  df   = read.csv(paste0(path,"/",stocks$Symbol[ind],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+  
+  # compute emas
+  ema12 = ema(df$Close,12)
+  ema26 = ema(df$Close,26)
+  
+  # Assign vals
+  temp_high  = rep(NA,8000)
+  temp_close = rep(NA,8000)
+  temp_ema12 = rep(NA,8000)
+  temp_ema26 = rep(NA,8000)
+  
+  temp_high[(8000 - nrow(df) + 1):8000]  = df$High
+  temp_close[(8000 - nrow(df) + 1):8000] = df$Close
+  temp_ema12[(8000 - nrow(df) + 1):8000] = ema12
+  temp_ema26[(8000 - nrow(df) + 1):8000] = ema26
+  
+  # compute fake macd crossover signal
+  price_entry = 351/28*(28/351* temp_close[i-1] + 11/13*(temp_ema12[i-2] - temp_ema12[i-1]) + 25/27*(temp_ema26[i-1] - temp_ema26[i-2]))
+  
+  return(list(iscross       = price_entry >= temp_close[i] & temp_high[i] > price_entry,
+              macd_diff_val = MACD_diff[ind,i]))
+  
+}
+
+# compute fake entries given top N
+false_entry_cum = rep(0,dim(MACD_diff)[2]-2)
+prop_fake_one   = c()
+prob_fake_prob  = c()
+prop_fake_cum   = c()
+
+for (n in 1:20) {
+  
+  false_entry    = c()
+  false_macd_val = c()
+  
+  # loop through all columns
+  for (i in 3:dim(MACD_diff)[2]) {
+    out = fake_macd_entry_finder(n,i)
+    false_entry    = c(false_entry, out$iscross)
+    false_macd_val = c(false_macd_val, out$macd_diff_val)
+  }
+  
+  false_entry_cum = false_entry_cum + as.numeric(false_entry)
+  
+  # Given N'th potential cross, probability on average that it is fake entry signal
+  prop_fake_one = c(prop_fake_one, sum(false_entry,na.rm=TRUE)/sum(!is.na(false_entry))*100)
+  
+  # Given top N potential crosses, proportion of days that contain fake entry signal
+  prob_fake_prob = c(prob_fake_prob, mean(false_entry_cum/n,na.rm=TRUE)*100)
+  
+  # Given top 1 to N potential crosses, how many produce fake entry signal
+  false_entry_cum_i = false_entry_cum >= 1
+  prop_fake_cum     = c(prop_fake_cum, sum(false_entry_cum_i,na.rm=TRUE)/sum(!is.na(false_entry_cum_i))*100)
+  
+}
+
+names(prop_fake_one)  = 1:20
+names(prob_fake_prob) = 1:20
+names(prop_fake_cum)  = 1:20
+
+# produce plots
+par(mfrow=c(1,3))
+
+barplot(prop_fake_one,xlab="Top N (MACD Guesses)",ylab="Probability (%)",
+        main="Probability That the N'th Guess is Fake Entry",ylim=c(0,50))
+abline(h=seq(10,50,by=10),lty=2,col=alpha("red",0.5))
+barplot(prob_fake_prob,xlab="Top N (MACD Guesses)",ylab="Probability (%)",
+        main="Proportion of Days Containing Fake Entry for the Top N Guesses",ylim=c(0,50))
+abline(h=seq(10,50,by=10),lty=2,col=alpha("red",0.5))
+barplot(prop_fake_cum,xlab="Top N (MACD Guesses)",ylab="Probability (%)",
+        main="Probability That there is a Fake Entry in the Top N Guesses",ylim=c(0,100))
+abline(h=seq(10,100,by=10),lty=2,col=alpha("red",0.5))
+```
+

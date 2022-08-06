@@ -1,0 +1,97 @@
+
+-------------------------------------------------------------------------------------------------------
+  Google Sheet Function Format Examples:
+  
+    = GOOGLEFINANCE("NZE:MDZ","all",DATE(1970,1,1),DATE(2020,6,7),"DAILY") 
+      
+    Gives 6 columns: "Date","Open","High","Low","Close","Volume"
+      
+    = GOOGLEFINANCE("NZE:MDZ","close",DATE(1970,1,1),DATE(2020,6,7),"DAILY") 
+    
+    Gives 2 columns: "Date","Close"
+-------------------------------------------------------------------------------------------------------
+
+# Load Tickers
+```{r}
+rm(list=ls())
+df = read.csv("NZX.csv")
+```
+
+
+# Generate Excel Formulas for Downloading Tickers to Upload to Google Sheets 
+```{r}
+# define corresponding exchanges
+##########################################################################################################
+# create google sheet formulas for ETF tickers
+##########################################################################################################
+googlefinance_single = function(ticker   = "NZ50G",
+                                exchange = "NZE",
+                                start    = "DATE(2000,1,1)",
+                                stop     = paste0("DATE(",gsub("-",",",Sys.Date()),")")) {
+  return(
+    paste0( "= GOOGLEFINANCE(\"" , exchange , ":" , ticker, "\",\"all\"," , start , "," , stop , ",\"DAILY\")" )
+  )
+}
+
+# loop through tickers and generate excel formula
+xlsx = c()
+for (i in 93:184) {
+  
+  # input with ticker and exchange symbols
+  s = googlefinance_single(df$Code[i], "NZE")
+
+  # 6 column space between strings
+  xlsx = c(xlsx,c(s,rep("",5)))
+
+}
+
+# write to output, default to desktop
+write.csv(t(xlsx),file.path(Sys.getenv("USERPROFILE"),"Desktop","temp.csv"),row.names=FALSE)
+```
+
+
+# Manual Step for Downloading All Selected Ticker Data
+1) Upload file generated in the code block above is uploaded onto google drive 
+2) Converet file to a google sheet (formula will execute automatically)
+3) Go to "File" -> "Publish to the Web" with type = ".csv", then click "Publish"
+4) Using the link obtained from publishing, copy paste URL into new webpage and download the file
+
+
+# Process and Save Ticker Data Downloaded from Google Sheets Chunks
+```{r}
+setwd(file.path(Sys.getenv("USERPROFILE"),"Desktop"))
+
+# loop through each doc
+j = 2      # Manually Adjust This
+count = 93 # Manually Adjust This
+
+# read donwloaded file from desktop
+path    = paste0("temp - temp ",j,".csv")
+all_dat = read.csv(path,sep=",",header=TRUE,stringsAsFactors=FALSE)
+
+# loop through every 6 columns and save to csv
+for (i in seq(1,ncol(all_dat),by=6)) {
+  
+  # extract data for 1 ticker
+  temp = all_dat[2:nrow(all_dat),i:(i+5)]      # get relevant columns
+  colnames(temp) = tolower(all_dat[1,i:(i+5)]) # define column names
+  temp = temp[temp[,1]!="",]                   # remove NA rows
+  
+  # change format of dates
+  col1 = unlist(strsplit(temp[,1]," "))[c(TRUE,FALSE)]
+
+  if (!is.null(col1)) {
+  
+    # format columns
+    temp[,1]   = as.Date(col1,format="%d/%m/%Y") # as.Date(col1,format="%m/%d/%Y") #
+    temp[,2:6] = as.numeric(unlist(temp[,2:6]))
+  
+    # write to file
+    write.csv(temp,paste0("nzx stocks/",df$Code[count],".csv"),row.names=FALSE)
+    
+  }
+  
+  count = count + 1
+  
+}
+```

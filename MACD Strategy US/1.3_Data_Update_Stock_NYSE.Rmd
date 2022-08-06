@@ -1,0 +1,73 @@
+
+# ----------------------------------------------------------------------------------------------------
+# Notes:
+# - Update NYSE and NASDAQ database once every month (MACD uses 26ema so min 26 days per update)
+# - Update market caps every month
+# ----------------------------------------------------------------------------------------------------
+
+# Download Updated Data
+```{r}
+rm(list=ls())
+
+# set up stocks list for both nyse and nasdaq
+nyse_stocks   = read.csv("NYSE.csv")
+nasdaq_stocks = read.csv("NASDAQ.csv")
+
+stocks = rbind(nyse_stocks[c("Symbol","Cap","Float")],nasdaq_stocks[c("Symbol","Cap","Float")])
+stocks$exchange = c(rep("nyse",nrow(nyse_stocks)),rep("nasdaq",nrow(nasdaq_stocks)))
+
+
+
+```
+
+# Update Market Caps
+```{r}
+rm(list=ls())
+
+# Load data
+nasdaq = read.csv("NASDAQ.csv",sep=",",header=TRUE,stringsAsFactors=FALSE) # NASDAQ.csv NYSE.csv
+nasdaq = nasdaq[nasdaq$Data == "Y",]
+
+# define new columns
+nasdaq$Cap   = NA
+nasdaq$Float = NA
+
+# append new data to data frame
+for (i in 1:nrow(nasdaq)) {
+  
+  print(i)
+  
+  # read webpage
+  webpage = tryCatch({readLines(paste0("https://finviz.com/quote.ashx?t=",nasdaq$Symbol[i]))},
+                      error   = function(cond) {return(NA)}
+                     )
+  
+  if (!is.na(webpage)) {
+
+    # market cap data
+    line  = webpage[grepl("Market Cap",webpage)]
+    start = gregexpr("<b>",line)[[1]][1]
+    end   = gregexpr("</b>",line)[[1]][1]
+    
+    nasdaq$Cap[i] = substring(line,start+3,end-1)
+    
+    # float data in millions
+    line  = webpage[grepl("Shs Float",webpage)]
+    start = gregexpr("<b>",line)[[1]][1]
+    end   = gregexpr("</b>",line)[[1]][1]
+    
+    nasdaq$Float[i] = substring(line,start+3,end-1)
+    
+  }
+
+}
+
+nasdaq[is.na(nasdaq)] = "-"
+
+# change cap and float to millions
+nasdaq$Cap   = as.numeric(substr(nasdaq$Cap,1,nchar(nasdaq$Cap)-1))     * ifelse(grepl("M",nasdaq$Cap),1,1000)
+nasdaq$Float = as.numeric(substr(nasdaq$Float,1,nchar(nasdaq$Float)-1)) * ifelse(grepl("M",nasdaq$Float),1,1000)
+
+# Save updated info
+#write.csv(nasdaq,"NASDAQ.csv",row.names=FALSE)
+```

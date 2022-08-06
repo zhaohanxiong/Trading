@@ -1,0 +1,205 @@
+
+
+-------------------------------------------------------------------------------------------------------
+  Nasdaq Ticker List of Symbols
+    
+    https://www.nasdaqtrader.com/trader.aspx?id=symbollookup
+-------------------------------------------------------------------------------------------------------
+
+
+# Get All NASDAQ Symbols
+```{r}
+# read nasdaq ticker data
+txt = readLines("nasdaq.txt")
+
+# column names
+cols = strsplit(txt[1],"\\|")[[1]]
+
+# convert to data frame
+df = data.frame(matrix(unlist(lapply(txt[2:length(txt)], function(x) strsplit(x,"\\|")[[1]])),ncol=length(cols),byrow=TRUE))
+colnames(df) = cols
+
+# filter
+df = df[df$`ETF`=="N",]
+df = df[df$`NextShares`=="N",]
+
+# change classes
+df$Symbol     = as.character(df$Symbol)
+df$Data       = NA
+row.names(df) = NULL
+```
+
+
+-------------------------------------------------------------------------------------------------------
+  Google Sheet Function Format Examples:
+  
+    = GOOGLEFINANCE("NZE:MDZ","all",DATE(1970,1,1),DATE(2020,6,7),"DAILY") 
+      
+    Gives 6 columns: "Date","Open","High","Low","Close","Volume"
+      
+    = GOOGLEFINANCE("NZE:MDZ","close",DATE(1970,1,1),DATE(2020,6,7),"DAILY") 
+    
+    Gives 2 columns: "Date","Close"
+-------------------------------------------------------------------------------------------------------
+
+
+# Generate Excel Formulas for Downloading Tickers to Upload to Google Sheets 
+```{r}
+# need to iterate through each one, one data at a time due to memory restrictions
+i1 = 1   # 1    151  301  451  601  751  901 1051 1201 1351 1501 1651 1801 1951 2101 2251 2401 2551 2701 2851
+i2 = 150 # 150  300  450  600  750  900 1050 1200 1350 1500 1650 1800 1950 2100 2250 2400 2550 2700 2850 3000
+
+# define corresponding exchanges
+##########################################################################################################
+# create google sheet formulas for ETF tickers
+##########################################################################################################
+googlefinance_single = function(ticker   = "NZ50G",
+                                exchange = "NZE",
+                                start    = "DATE(1995,1,1)",
+                                stop     = paste0("DATE(",gsub("-",",",Sys.Date()),")")) {
+  return(
+    paste0( "= GOOGLEFINANCE(\"" , exchange , ":" , ticker, "\",\"all\"," , start , "," , stop , ",\"DAILY\")" )
+  )
+}
+
+# loop through tickers and generate excel formula
+xlsx = c()
+for (i in i1:i2) {
+  
+  # input with ticker and exchange symbols
+  s = googlefinance_single(df$`Symbol`[i], "NASDAQ")
+
+  # 6 column space between strings
+  xlsx = c(xlsx,c(s,rep("",5)))
+
+}
+
+# write to output, default to desktop
+write.csv(t(xlsx),file.path(Sys.getenv("USERPROFILE"),"Desktop","temp.csv"),row.names=FALSE)
+```
+
+
+# Manual Step for Downloading All Selected Ticker Data
+1) Upload file generated in the code block above is uploaded onto google drive 
+2) Converet file to a google sheet (formula will execute automatically)
+3) Go to "File" -> "Publish to the Web" with type = ".csv", then click "Publish"
+4) Using the link obtained from publishing, copy paste URL into new webpage and download the file
+
+
+# Process and Save Ticker Data Downloaded from Google Sheets Chunks
+```{r}
+setwd(file.path(Sys.getenv("USERPROFILE"),"Desktop","nasdaq googlesheet chunks 1995_01_01-2020_10_27"))
+
+count = 1
+
+# loop through each doc
+for (j in 1:34) {
+
+  print(j)
+  # read donwloaded file from desktop
+  path    = paste0("temp - temp ",j,".csv")
+  all_dat = read.csv(path,sep=",",header=TRUE,stringsAsFactors=FALSE)
+  
+  # loop through every 6 columns and save to csv
+  for (i in seq(1,ncol(all_dat),by=6)) {
+    
+    # extract data for 1 ticker
+    temp = all_dat[2:nrow(all_dat),i:(i+5)]      # get relevant columns
+    colnames(temp) = tolower(all_dat[1,i:(i+5)]) # define column names
+    temp = temp[temp[,1]!="",]                   # remove NA rows
+    
+    # change format of dates
+    col1 = unlist(strsplit(temp[,1]," "))[c(TRUE,FALSE)]
+  
+    if (!is.null(col1)) {
+    
+      # format columns
+      if (j == 15 | j == 31) {
+        temp[,1]   = as.Date(col1,format="%m/%d/%Y") # 
+      } else {
+        temp[,1]   = as.Date(col1,format="%d/%m/%Y") # as.Date(col1,format="%m/%d/%Y") #
+      }
+      temp[,2:6] = as.numeric(unlist(temp[,2:6]))
+    
+      # write to file
+      write.csv(temp,paste0("nasdaq stocks/",df$Symbol[count],".csv"),row.names=FALSE)
+      
+      # if there is data for this ticker
+      df$Data[count] = "Y"
+      
+    } else {
+      
+      # if there is no data for this ticker
+      df$Data[count] = "N"
+      
+    }
+    
+    count = count + 1
+      
+  }
+
+}
+
+# Save NASDAQ Ticker Symbols and Info into Spreadsheet
+write.csv(df,"NASDAQ.csv",row.names=FALSE)
+```
+
+
+-------------------------------------------------------------------------------------------------------
+  Individual Stock Data
+    
+    https://finviz.com/quote.ashx?t=AACQ
+-------------------------------------------------------------------------------------------------------
+
+
+# Add Market Caps
+```{r}
+rm(list=ls())
+
+# Load data
+nasdaq = read.csv("NASDAQ.csv",sep=",",header=TRUE,stringsAsFactors=FALSE)
+nasdaq = nasdaq[nasdaq$Data == "Y",]
+
+# define new columns
+nasdaq$Cap   = NA
+nasdaq$Float = NA
+
+# append new data to data frame
+for (i in 1:nrow(nasdaq)) {
+  
+  print(i)
+  
+  # read webpage
+  webpage = tryCatch({readLines(paste0("https://finviz.com/quote.ashx?t=",nasdaq$Symbol[i]))},
+                      error   = function(cond) {return(NA)}
+                     )
+  
+  if (!is.na(webpage)) {
+
+    # market cap data
+    line  = webpage[grepl("Market Cap",webpage)]
+    start = gregexpr("<b>",line)[[1]][1]
+    end   = gregexpr("</b>",line)[[1]][1]
+    
+    nasdaq$Cap[i] = substring(line,start+3,end-1)
+    
+    # float data in millions
+    line  = webpage[grepl("Shs Float",webpage)]
+    start = gregexpr("<b>",line)[[1]][1]
+    end   = gregexpr("</b>",line)[[1]][1]
+    
+    nasdaq$Float[i] = substring(line,start+3,end-1)
+    
+  }
+
+}
+
+nasdaq[is.na(nasdaq)] = "-"
+
+# change cap and float to millions
+nasdaq$Cap   = as.numeric(substr(nasdaq$Cap,1,nchar(nasdaq$Cap)-1))     * ifelse(grepl("M",nasdaq$Cap),1,1000)
+nasdaq$Float = as.numeric(substr(nasdaq$Float,1,nchar(nasdaq$Float)-1)) * ifelse(grepl("M",nasdaq$Float),1,1000)
+
+# Save updated info
+write.csv(nasdaq,"NASDAQ.csv",row.names=FALSE)
+```

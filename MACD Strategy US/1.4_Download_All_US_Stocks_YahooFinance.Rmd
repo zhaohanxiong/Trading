@@ -1,0 +1,145 @@
+
+# -------------------------------------------------------------------------------------------------------------
+# Notes:
+# - Update NYSE and NASDAQ database once every month (MACD uses 26ema so min 26 days per update)
+# - Update market caps every month
+
+# - Yahoo Finance query (works as of 13-04-2021):
+#   https://query1.finance.yahoo.com/v7/finance/download/ED
+#   ?period1=631152000&period2=1618272000&interval=1d&events=history&includeAdjustedClose=true
+# -------------------------------------------------------------------------------------------------------------
+
+# Download Updated Data
+```{r}
+rm(list=ls())
+
+# create folder to save stocks
+dir.create(file.path(Sys.getenv("USERPROFILE"),"Desktop","NYSE stocks"))
+dir.create(file.path(Sys.getenv("USERPROFILE"),"Desktop","NASDAQ stocks"))
+
+# set up stocks list for both nyse and nasdaq
+nyse_stocks   = read.csv("NYSE.csv")
+nasdaq_stocks = read.csv("NASDAQ.csv")
+
+stocks = rbind(nyse_stocks[c("Symbol","Cap","Float")],nasdaq_stocks[c("Symbol","Cap","Float")])
+stocks$exchange = c(rep("NYSE",nrow(nyse_stocks)),rep("NASDAQ",nrow(nasdaq_stocks)))
+stocks$exists   = NA
+
+# loop through all data and save
+for (i in 1:nrow(stocks)) {
+  
+  # show progress
+  print(paste0(i," - ",stocks$Symbol[i]))
+  
+  # yahoo query command
+  yahoo_query = "https://query1.finance.yahoo.com/v7/finance/download/"
+  query_param = "?period1=879206400&period2=1618358400&interval=1d&events=history&includeAdjustedClose=true"
+  yahoo_url   = paste0(yahoo_query,stocks$Symbol[i],query_param)
+  
+  # save path
+  savepath = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks"),stocks$Symbol[i])
+  savepath = paste0(savepath,".csv")
+  
+  # download stocks
+  err = tryCatch({download.file(yahoo_url,savepath,quiet=TRUE)}, error = function(cond) {return(NA)})
+  
+  # whether or not stock was correctly downloaded
+  if (is.na(err)) {
+    stocks$exists[i] = FALSE
+  } else {
+    stocks$exists[i] = TRUE
+  }
+  
+}
+```
+
+# Update Market Caps
+```{r}
+rm(list=ls())
+
+# set exchanges
+exchange = c("NASDAQ.csv","NYSE.csv")
+
+for (e in exchange) {
+  
+  # Load data
+  stock = read.csv(e,sep=",",header=TRUE,stringsAsFactors=FALSE) 
+  stock = stock[stock$Data == "Y",]
+  
+  # define new columns
+  stock$Cap   = NA
+  stock$Float = NA
+  
+  # append new data to data frame
+  for (i in 1:nrow(stock)) {
+    
+    print(paste0(gsub(".csv","",e)," - ",i))
+    
+    # read webpage
+    webpage = tryCatch({readLines(paste0("https://finviz.com/quote.ashx?t=",stock$Symbol[i]))},
+                        error   = function(cond) {return(NA)}
+                       )
+    
+    if (!is.na(webpage[1])) {
+  
+      # market cap data
+      line  = webpage[grepl("Market Cap",webpage)]
+      start = gregexpr("<b>",line)[[1]][1]
+      end   = gregexpr("</b>",line)[[1]][1]
+      
+      stock$Cap[i] = substring(line,start+3,end-1)
+      
+      # float data in millions
+      line  = webpage[grepl("Shs Float",webpage)]
+      start = gregexpr("<b>",line)[[1]][1]
+      end   = gregexpr("</b>",line)[[1]][1]
+      
+      stock$Float[i] = substring(line,start+3,end-1)
+      
+    }
+  
+  }
+  
+  stock[is.na(stock)] = "-"
+  
+  # change cap and float to millions
+  stock$Cap   = as.numeric(substr(stock$Cap,  1,nchar(stock$Cap)  -1)) * ifelse(grepl("M",stock$Cap),  1,1000)
+  stock$Float = as.numeric(substr(stock$Float,1,nchar(stock$Float)-1)) * ifelse(grepl("M",stock$Float),1,1000)
+  
+  # Save updated info
+  write.csv(stock,e,row.names=FALSE)
+  
+}
+```
+
+# Validate Stock Downloads Visually
+```{r}
+# create folder to save stocks
+dir.create(file.path(Sys.getenv("USERPROFILE"),"Desktop","US Stock Plots"))
+
+# plot and save all stocks
+for (i in nrow(stocks)) {
+  
+  # path to load stocks
+  loadpath = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks"),stocks$Symbol[i])
+  loadpath = paste0(loadpath,".csv")
+    
+  # load stock
+  df = read.csv(loadpath,sep=",")
+  df$Date  = as.Date(df$Date)
+  df$Close = as.numeric(df$Close)
+  
+  # set up save path
+  savepath = file.path(Sys.getenv("USERPROFILE"),"Desktop","US Stock Plots",stocks$Symbol[i])
+  
+  # set up plot window
+  png(paste0(savepath,".png"), width = 1000, height = 1000)
+  
+  # plot price
+  plot(df$Date,df$Close,type="l")
+  
+  # close plotting
+  dev.off()
+  
+}
+```

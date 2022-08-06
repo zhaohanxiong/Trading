@@ -1,0 +1,45 @@
+
+# Download All Required Tickers From Yahoo Finance
+
+- only run this code during NZX opening hours, after 12 to be safe
+- yahooQF() function argument to getSymbols to get more about company
+
+```{r}
+rm(list=ls())
+library(quantmod)
+
+# load ticker list for etf and index pairs
+etf = read.csv("ETFpairs_sorted.csv",header=TRUE)
+
+# produce array of all tickers using yahoo finance format
+stocks = c(paste0(etf$ETF,".NZ"), etf$YahooFinance,
+           "NZDUSD=X","NZDGBP=X")
+
+# loop through all data and save
+for (i in 1:length(stocks)) {
+  
+  # quant mod command to access yahoo finance
+  df = getSymbols(stocks[i],from="2018-01-01",to=Sys.Date(),warnings=FALSE,auto.assign=FALSE)
+
+  # process data downloaded into right form
+  df           = data.frame(df)
+  df$Date      = rownames(df)
+  rownames(df) = NULL
+  colnames(df) = c("open","high","low","close","volume","close.Adj","date")
+  df           = df[,c("date","open","high","low","close")]
+
+  if (grepl("X",df$date[1])) {
+    df$date = gsub("X","",df$date)
+    df$date = gsub("\\.","-",df$date)
+  }
+  
+  # save stock to file with simple ticker name
+  ticker = gsub("=X",".",stocks[i])
+  ticker = gsub("X","",ticker)
+  ticker = gsub("\\^A","",ticker)
+  period_loc = regexpr("\\.",ticker)[1]
+  ticker = substr(ticker,1,ifelse(period_loc==-1,nchar(ticker),period_loc-1))
+  write.csv(df,paste0("data/",ticker,".csv"),row.names=FALSE)
+  
+}
+```

@@ -1,0 +1,135 @@
+
+# -----------------------------------------------------------------------------------------------
+# How To Use
+# -----------------------------------------------------------------------------------------------
+# - run code to find most likely crosses
+# - manually select with ones seem the most likely to cross
+# - set up trades on IBKR with defined entry price
+# # 
+# - after 1st day, see which trades got executed
+# - recalculate the stop loss % using the low of the 1st day if it is lower than prior stop loss
+# - add the stop loss using 1st day's high, repeat everyday until position closes
+# -----------------------------------------------------------------------------------------------
+
+# Find Next Trade
+```{r}
+rm(list=ls())
+source("Utils.R")
+
+# set up stock paths
+nyse_stocks   = read.csv("nyse.csv")
+nasdaq_stocks = read.csv("nasdaq.csv")
+exchange      = c(rep("nyse",nrow(nyse_stocks)),rep("nasdaq",nrow(nasdaq_stocks)))
+
+stocks = rbind(nyse_stocks[c("Symbol","Cap","Float")],nasdaq_stocks[c("Symbol","Cap","Float")])
+
+# load stocks database
+stocks$exchange    = exchange
+stocks$diff.MACD   = NA
+stocks$price.entry = NA
+stocks$stop.per    = NA
+
+# get list of tickers
+for (i in 1:length(stocks$Symbol)) {
+  
+  print(stocks$Symbol[i])
+
+  # check if stock data exists
+  if (sum(paste0(stocks$Symbol[i],".csv") == 
+      list.files(file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks")))) == 0) next
+
+  # load stock
+  path = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks"))
+  df   = read.csv(paste0(path,"/",stocks$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+  df   = df[!is.na(df$Close),]
+  
+  # return if data is less than 35 in length and cant compute MACD
+  if (nrow(df) <= 35) next
+
+  # techinicals
+  ema12       = ema(df$Close,  12)
+  ema26       = ema(df$Close,  26)
+  macd12_26_9 = macd(df$Close, 12, 26, 9)
+  
+  # skip trade if MACD is above signal line, or if either line is above 0
+  macd_n = tail(macd12_26_9$MACD,1)
+  sig_n  = tail(macd12_26_9$signal,1)
+  if (macd_n > sig_n | sig_n  >= 0 | macd_n >= 0) next
+  diffnorm = abs((sig_n - macd_n)/sig_n)
+  
+  # # # # # analyze price action at latest price (start of strategy code)
+  m = nrow(df) # entry is m+1 in this case
+  
+  # get local region of current price/date
+  price     = df$Close[max(c((m - 100),1)):m]
+  price_low = df$Low[max(c((m - 100),1)):m]
+  date      = df$Date[max(c((m - 100),1)):m]
+  
+  # compute prior swing low
+  price_smooth = smooth(c(price,price[length(price)]*seq(1.01,by=0.01,length=50)),0.1)[1:length(price)]
+  minimas      = local_extrema(price_smooth,max=FALSE)
+  min_ind      = minimas[length(minimas)]
+  min_date     = date[min_ind]
+  
+  # find minimum in local region of min_date
+  min_date = date[which.min(price_low[max(c(1,(min_ind - 5))):min(c(length(price_low),(min_ind + 5)))]) + min_ind - 6]
+  
+  # derive the exact price of crossover, and thus, entry price
+  price_entry = 351/28*(28/351*df$Close[m] + 11/13*(ema12[m-1] - ema12[m]) + 25/27*(ema26[m] - ema26[m-1]))
+  
+  # set stop price and stop loss percentage
+  price_stop = df$Low[df$Date == min_date][1] # Use Low or Close
+  stop_per   = (price_stop - price_entry)/price_entry*100
+  
+  # skip if stop loss is too large, or if its positive which means the code fked up
+  if (stop_per < -2 | stop_per > 0) next
+ 
+  # save values
+  stocks$diff.MACD[i]   = diffnorm
+  stocks$price.entry[i] = price_entry
+  stocks$stop.per[i]    = stop_per
+  
+}
+
+# Filter Stocks
+stocks_enter = stocks
+stocks_enter = stocks_enter[stocks_enter$Cap > 1000,]
+stocks_enter = stocks_enter[!is.na(stocks_enter$diff.MACD),]
+stocks_enter = stocks_enter[order(stocks_enter$diff.MACD,decreasing=FALSE),]
+rownames(stocks_enter) = NULL
+
+# Save Potential Entries
+write.csv(stocks_enter,file.path(Sys.getenv("USERPROFILE"),"Desktop",
+                                 paste0("Next Trades",as.character(Sys.Date()),".csv")),row.names=FALSE)
+```
+
+# Plot Stocks
+```{r}
+dir.create(file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0("Next Trades",as.character(Sys.Date()))))
+
+for (i in 1:nrow(stocks_enter)) {
+
+  # load stock
+  path    = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks_enter$exchange[i]," stocks"))
+  df      = read.csv(paste0(path,"/",stocks_enter$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+  df$Date = as.Date(df$Date)
+    
+  # compute macd
+  ema200      = ema(df$Close,200)
+  macd12_26_9 = macd(df$Close, 12, 26, 9)
+  
+  # crop df
+  r                  = 22
+  ema200             = ema200[(nrow(df) - r):nrow(df)]
+  macd12_26_9$MACD   = macd12_26_9$MACD[(nrow(df) - r):nrow(df)]
+  macd12_26_9$signal = macd12_26_9$signal[(nrow(df) - r):nrow(df)]
+  df                 = df[(nrow(df) - r):nrow(df),]
+  
+  # save
+  savepath = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0("Next Trades",as.character(Sys.Date())))
+  plot_stock(df,sub="macd",
+             emas=list(ema200),macd=macd12_26_9,
+             save=TRUE,savename=paste0(savepath,"/",i,"_",stocks_enter$exchange[i],"-",stocks_enter$Symbol[i]))
+
+}
+```

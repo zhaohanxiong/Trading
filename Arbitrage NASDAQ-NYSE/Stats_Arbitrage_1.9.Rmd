@@ -1,0 +1,457 @@
+
+# --------------------------------------------------------------------------------------
+# IBKR Fees
+# --------------------------------------------------------------------------------------
+# Stocks: 
+#     - 0.005 USD/share                 (Shares above or equal to 0.5 USD)
+#     - 1% of trade value               (Shares below 0.5 USD)
+#     - Minimum of 1 USD for any trade  (When trading less than 200 shares of any stock)
+# # 
+# Currency:
+#     - 0.002% of trade value           (When trading above or equals to 100,000 USD)
+#     - Minimum of 2 USD for any trade  (When trading less than 100,000 USD)
+# # 
+# --------------------------------------------------------------------------------------
+
+# helper functions
+```{r}
+rm(list=ls())
+#setwd("C:/Users/zxio506/OneDrive/Assets/Securities/Trading Stocks")
+
+# path to stocks
+desktop_path = file.path(Sys.getenv("USERPROFILE"),"Desktop")
+
+# rolling cumulative return moving average
+rcma = function(x,n) {
+  
+  n     = n - 1
+  rma_x = (x[1:n]-x[1])/x[1]
+
+  for (i in seq(1, length(x)-n)) {
+    rma_x = c(rma_x, (x[i+n]-x[i])/x[i])
+  }
+  
+  return(rma_x*100)
+
+}
+
+# compute location of cross over
+crossover = function(x1,x2) {
+  
+  # find max time steps
+  l = max(c(length(x1),length(x2)))
+  
+  # duplicate values if only singular numeric value is provided
+  if (length(x1) == 1) x1 = rep(x1,l)
+  if (length(x2) == 1) x2 = rep(x2,l)
+  
+  # find which indices are true, if NA then set as false. x1 was more, now is less
+  cross_ind = c(FALSE,x1[1:(l-1)] > x2[1:(l-1)] & x1[2:l] < x2[2:l])
+  cross_ind[is.na(cross_ind)] = FALSE
+  
+  return(cross_ind)
+  
+}
+
+# plot ticker
+plot_etf = function(data,data_ref,data_diff,
+                    ind_entry,ind_exit,
+                    save=FALSE,savename="") {
+  
+  # save plot
+  if (save) png(paste0(savename,".png"), width = 500, height = 750)
+  
+  # set up plot area
+  layout(matrix(1:2,2,1),heights=c(1.5,1))
+  
+  # set up plot range
+  xrange = range(data$date,na.rm=TRUE)
+  yrange = range(c(data$high*1.005,data$low*0.995,data_ref),na.rm=TRUE)
+  
+  # initialize plot with margin sizes
+  par(mar=c(1,4,1,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange,xlab="",ylab="Price (NZD)",xaxt="n",yaxt="n")
+  
+  # label axis
+  axis(2,at=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=0.01),2),
+       labels=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=0.01),2),las=2)
+  
+  # reference index price
+  lines(data$date,data_ref,col="orange")
+  points(data$date,data_ref,col="orange",pch=20)
+  
+  # insert candlesticks
+  abline(v=data$date,col="grey80",lty=4)
+  colors = ifelse(data$close >= data$open,"forestgreen","tomato")
+  segments(x0  = data$date, y0 = data$low
+          ,x1  = data$date, y1 = data$high
+          ,col = colors, lwd=1
+  )
+  rect(xleft   = data$date-0.3
+      ,ybottom = ifelse(data$close >= data$open,data$open,data$close)
+      ,xright  = data$date+0.3
+      ,ytop    = ifelse(data$close >= data$open,data$close,data$open)
+      ,col     = colors,border=colors
+  )
+  
+  # plot entry and exit
+  points(data$date[ind_entry],data$low[ind_entry]*0.995,col="blue",pch=24,cex=2,lwd=3)
+  points(data$date[ind_exit],data$high[ind_exit]*1.005,col="blue",pch=25,cex=2,lwd=3)
+  
+  # set up plot range
+  yrange2 = range(data_diff,na.rm=TRUE)
+  
+  # initialize plot with margin sizes
+  par(mar=c(6,4,0,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange2,xlab="",ylab= "Index - Stock",xaxt="n",las=1)
+  
+  # label axis
+  axis(1,at=seq(xrange[1],xrange[2],by=1),labels=seq(xrange[1],xrange[2],by=1),las=2)
+  
+  # add diff plot
+  abline(h=-10:10,col="grey80",lty=4)
+  abline(v=data$date,col="grey80",lty=4)
+  abline(h=c(1.5,-1.0),col="deepskyblue",lty=2,lwd=2)
+  
+  lines(data$date,data_diff,col="black")
+  points(data$date,data_diff,col="black",pch=20)
+  
+  # save plot
+  if (save) dev.off()
+  
+}
+```
+
+# Simulate All Trades
+```{r}
+pairs = read.csv("pairs.csv",header=TRUE)
+
+# store data
+out_ticker_base = c()
+out_ticker_comp = c()
+out_exchange    = c()
+out_ind_entry   = c()
+out_ind_exit    = c()
+out_date_entry  = c()
+out_date_exit   = c()
+out_price_entry = c()
+out_price_exit  = c()
+out_return      = c()
+
+# which exchange to trade, 1 for NYSE trading, 2 for NASDAQ trading
+exchange = c("NYSE","NASDAQ")
+
+for (key in 1:2) {
+  
+  # loop through every ETF pair
+  for (n in 1:nrow(pairs)) {
+    
+    # load data
+    etf_ny = read.csv(paste0(file.path(desktop_path,exchange[key]),"/",pairs[n,key],".csv"),header=TRUE,stringsAsFactors=FALSE,sep=",")
+    etf_nq = read.csv(paste0(file.path(desktop_path,exchange[3-key]),"/",pairs[n,3-key],".csv"),header=TRUE,stringsAsFactors=FALSE,sep=",")
+    
+    etf_ny$date = as.Date(etf_ny$date)
+    etf_nq$date = as.Date(etf_nq$date)
+  
+    # normalize number of rows
+    if (nrow(etf_ny) > nrow(etf_nq)) {
+      etf_ny = etf_ny[(nrow(etf_ny)-nrow(etf_nq)+1):nrow(etf_ny),]
+      etf_nq = etf_nq[(nrow(etf_nq)-nrow(etf_ny)+1):nrow(etf_nq),]
+    } else {
+      etf_nq = etf_nq[(nrow(etf_nq)-nrow(etf_ny)+1):nrow(etf_nq),]
+      etf_ny = etf_ny[(nrow(etf_ny)-nrow(etf_nq)+1):nrow(etf_ny),]
+    }
+    
+    # compute cumulative prices
+    rn       = 5
+    cum_nz   = rcma(etf_ny$close,rn) # nz = base stock to trade
+    cum_id   = rcma(etf_nq$close,rn) # id = stock to compare against
+    cum_diff = cum_id - cum_nz
+  
+    # higher filter
+    rn2       = 22
+    cum_nz2   = rcma(etf_ny$close,rn2)
+    cum_id2   = rcma(etf_nq$close,rn2)
+    cum_diff2 = cum_id2 - cum_nz2
+    
+    # entry indices
+    ind = which(crossover(1.5,cum_diff) & cum_diff2 > 1.5)                # ********** TUNENABLE x2
+    
+    # loop through every trade and apply strategy
+    for (i in ind) {
+      
+      # set entry price
+      price_entry = etf_ny$close[i]
+      
+      # exit criteria
+      ind_exit = crossover(cum_diff[i:length(cum_diff)],-1.0)             # ********** TUNENABLE
+      ind_exit = which(ind_exit)[1] + i - 1
+  
+      # if no exit then skip trade
+      if (is.na(ind_exit)) next
+  
+      # compute exit price
+      price_exit = etf_ny$close[ind_exit]
+      
+      # compute return
+      return = (price_exit - price_entry)/price_entry*100
+  
+      # store outputs
+      out_ticker_base = c(out_ticker_base, pairs[n,key])
+      out_ticker_comp = c(out_ticker_comp, pairs[n,3-key])
+      out_exchange    = c(out_exchange,    exchange[key])
+      out_ind_entry   = c(out_ind_entry,   i)
+      out_ind_exit    = c(out_ind_exit,    ind_exit)
+      out_date_entry  = c(out_date_entry,  as.character(etf_ny$date[i]))
+      out_date_exit   = c(out_date_exit,   as.character(etf_ny$date[ind_exit]))
+      out_price_entry = c(out_price_entry, price_entry)
+      out_price_exit  = c(out_price_exit,  price_exit)
+      out_return      = c(out_return,      return)
+      
+    }
+    
+  }
+}
+
+# store all trades
+out = data.frame(ticker_base = out_ticker_base,
+                 ticker_comp = out_ticker_comp,
+                 exchange    = out_exchange,
+                 ind.entry   = out_ind_entry,
+                 ind.exit    = out_ind_exit,
+                 date.entry  = as.Date(out_date_entry),
+                 date.exit   = as.Date(out_date_exit),
+                 price.entry = out_price_entry,
+                 price.exit  = out_price_exit,
+                 return      = out_return)
+
+# combine tickers into one column
+out$ticker = paste0(out$ticker_base,"_",out$ticker_comp)
+
+# apply comission (0.005 USD/share, max 1% of trade, minimum 1 USD per trade)
+capital = 10000 # account balance
+buy_comission = pmin(1, pmax(1/capital*100, capital/out$price.entry*0.005/capital*100))
+sell_comission = pmin(1, pmax(1/capital*100, capital/out$price.exit*0.005/capital*100))
+round_trip_comission = buy_comission + sell_comission
+out$return = out$return - round_trip_comission
+
+# compute outcome column (win or lose)
+out = out[!is.na(out$return),]
+out$outcome = ifelse(out$return > 0, TRUE, FALSE)
+
+# Summarize
+ls = list()
+ls[[1]] = sprintf("---------------------------")
+ls[[2]] = sprintf("Avg Win:  %0.2f%%", mean(out$return[out$outcome]))
+ls[[3]] = sprintf("Avg Loss: %0.2f%%", mean(out$return[!out$outcome]))
+ls[[4]] = sprintf("Win Rate: %0.1f%%", sum(out$outcome)/nrow(out)*100)
+ls[[5]] = sprintf("Expected: %0.2f%%", sum(out$outcome)*mean(out$return[out$outcome])/nrow(out) + 
+                                           sum(!out$outcome)*mean(out$return[!out$outcome])/nrow(out))
+ls[[6]] = sprintf("Avg Hold Period: %0.1f Days", mean(out$ind.exit-out$ind.entry))
+cat(paste0(ls,collapse="\n"))
+
+# Summarize Tickers By Individual Win Rates
+# temp = aggregate(out[,c(10,12)], by = list(out$ticker,out$exchange), FUN = mean)
+# temp = temp[order(temp$Group.1),]
+# temp$n = table(out$ticker)
+# View(temp)
+```
+
+# Simulate Portfolio
+```{r}
+# sort by date and define new dataframe, with coutners
+out_real          = out[order(out$date.entry),]
+out_real$real     = FALSE
+out_real$active   = FALSE
+out_real$n_active = NA
+max_active        = 10
+
+for (i in 1:nrow(out_real)) {
+
+  # exit previous positions which has passed
+  out_real$active[out_real$date.entry[i] > out_real$date.exit] = FALSE
+  
+  # if there are still position slots available
+  if (sum(out_real$active) < max_active) {
+    out_real$active[i] = TRUE
+    out_real$real[i]   = TRUE
+  }
+
+  # calcualte total number of active trades
+  out_real$n_active[i] = sum(out_real$active)
+  
+}
+
+# filter trades executed, and adjust return per trade due to position sizing
+out_real = out_real[out_real$real,]
+out_real$return = out_real$return/max_active
+
+par(mfrow=c(2,1)) 
+
+# plot portfolio performance
+cum_port = cumprod(out_real$return/100+1)
+
+plot(out_real$date.entry,cum_port,type="l",log="y")
+abline(h=c(1:10,seq(10,100,by=10)),lty=2, col="grey50")
+abline(v=as.Date(paste0(2009:2025,"-01-01")),lty=2, col="grey50")
+lines(out_real$date.entry,cum_port,col="blue",lwd=2)
+
+# plot annual return
+yearly_return = c()
+for (i in 2010:2021) {
+  
+  year_i = as.Date(paste0(i,"-01-01"))
+  start_i = cum_port[which(out_real$date.entry >= year_i)[1]]
+  end_i = cum_port[tail(which(out_real$date.entry <= (year_i+366)),1)]
+  return_i = (end_i - start_i)/start_i*100
+  yearly_return = c(yearly_return,return_i)
+  
+}
+
+names(yearly_return) = 2010:2021
+barplot(yearly_return)
+abline(h=seq(round(min(yearly_return),-1),round(max(yearly_return),-1),by=10),lty=2,col="grey50")
+
+# Summarize
+ls = list()
+ls[[1]] = sprintf("---------------------------")
+ls[[2]] = sprintf("Win Rate: %0.1f%%",           sum(out_real$outcome)/nrow(out_real)*100)
+ls[[3]] = sprintf("Expected: %0.2f%%",           (sum(out_real$outcome)*mean(out_real$return[out_real$outcome])/nrow(out_real) + 
+                                                   sum(!out_real$outcome)*mean(out_real$return[!out_real$outcome])/nrow(out_real))*max_active)
+ls[[4]] = sprintf("Avg Hold Period: %0.1f Days", mean(out_real$ind.exit-out_real$ind.entry))
+ls[[5]] = sprintf("Trades Per Year: %0.0f",      sum(out_real$date.entry > (out_real$date.entry[nrow(out_real)]-365.25)))
+ls[[6]] = sprintf("Annualized Return: %0.1f%%",  ((1+tail(cum_port,1))^
+                                                   (365/as.numeric((out_real$date.exit[nrow(out_real)]-out_real$date.entry[1])))-1)*100)
+ls[[7]] = sprintf("Median Annual Return: %0.1f%%", median(yearly_return))
+cat(paste0(ls,collapse="\n"))
+```
+
+
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+
+
+
+# Compute Potential NYSE Trades
+```{r}
+# first run initialization block
+# initialize dataframe 
+pairs_trade_nyse = read.csv("pairs.csv",header=TRUE)
+
+# define new columns
+pairs_trade_nyse$live_price  = NA
+pairs_trade_nyse$buy_signal  = NA
+pairs_trade_nyse$buy_limit   = NA
+pairs_trade_nyse$sell_signal = NA
+pairs_trade_nyse$sell_limit  = NA
+
+# trade nyse
+for (i in 1:nrow(pairs_trade_nyse)) {
+  
+  # load data
+  us_tr = read.csv(paste0(file.path(desktop_path,"NYSE"),"/",pairs_trade_nyse[i,1],".csv"),header=TRUE,stringsAsFactors=FALSE,sep=",")
+  us_id = read.csv(paste0(file.path(desktop_path,"NASDAQ"),"/",pairs_trade_nyse[i,2],".csv"),header=TRUE,stringsAsFactors=FALSE,sep=",")
+  
+  # dates
+  us_tr$date = as.Date(us_tr$date)
+  us_id$date = as.Date(us_id$date)
+
+  # get last 20 data
+  us_tr = us_tr[(nrow(us_tr)-25):nrow(us_tr),]
+  us_id = us_id[(nrow(us_id)-25):nrow(us_id),]
+  
+  # compute cumulative prices
+  rn       = 5
+  cum_nz   = rcma(us_tr$close,rn)
+  cum_id   = rcma(us_id$close,rn)
+  cum_diff = cum_id - cum_nz
+
+  # higher filter
+  rn2       = 22
+  cum_nz2   = rcma(us_tr$close,rn2)
+  cum_id2   = rcma(us_id$close,rn2)
+  cum_diff2 = cum_id2 - cum_nz2
+  
+  # live price
+  pairs_trade_nyse$live_price[i] = tail(us_tr$close,1)
+  
+  # compute entries and exits
+  pairs_trade_nyse$buy_signal[i]  = tail(crossover(1.5,cum_diff) & cum_diff2 > 1.5,1)
+  pairs_trade_nyse$sell_signal[i] = tail(crossover(cum_diff,-1.0),1)
+  
+  # calculate threshold value for crossover
+  n = nrow(us_tr)
+  pairs_trade_nyse$buy_limit[i]  = (cum_id[n] - 1.5)*us_tr$close[n-4]/100 + us_tr$close[n-4] # 1.5 entry thres
+  pairs_trade_nyse$sell_limit[i] = (cum_id[n] + 1.0)*us_tr$close[n-4]/100 + us_tr$close[n-4] # -1.0 exit thres
+  
+  # save plot
+  plot_etf(data      = us_tr[6:n,],
+           data_ref  = us_id$close[6:n]/us_id$close[6]*us_tr$close[6],
+           data_diff = cum_diff[6:n],
+           ind_entry = c(), ind_exit = c(),
+           save = TRUE, savename = paste0("nyse plot/",pairs_trade_nyse$NYSE[i],"-",pairs_trade_nyse$NASDAQ[i]))
+
+}
+
+# Summarize Current Status
+NYSE_Status = pairs_trade_nyse[order(pairs_trade_nyse$NYSE),]
+View(NYSE_Status)
+```
+# Compute NASDAQ Trades
+```{r}
+# define same dataframe for nasdaq
+pairs_trade_nasdaq = pairs_trade_nyse[,c(2,1,3:ncol(pairs_trade_nyse))]
+pairs_trade_nasdaq[,3:ncol(pairs_trade_nasdaq)] = NA
+
+# trade nyse
+for (i in 1:nrow(pairs_trade_nasdaq)) {
+  
+  # load data
+  us_tr = read.csv(paste0(file.path(desktop_path,"NASDAQ"),"/",pairs_trade_nasdaq[i,1],".csv"),header=TRUE,stringsAsFactors=FALSE,sep=",")
+  us_id = read.csv(paste0(file.path(desktop_path,"NYSE"),"/",pairs_trade_nasdaq[i,2],".csv"),header=TRUE,stringsAsFactors=FALSE,sep=",")
+  
+  # dates
+  us_tr$date = as.Date(us_tr$date)
+  us_id$date = as.Date(us_id$date)
+
+  # get last 20 data
+  us_tr = us_tr[(nrow(us_tr)-25):nrow(us_tr),]
+  us_id = us_id[(nrow(us_id)-25):nrow(us_id),]
+  
+  # compute cumulative prices
+  rn       = 5
+  cum_nz   = rcma(us_tr$close,rn)
+  cum_id   = rcma(us_id$close,rn)
+  cum_diff = cum_id - cum_nz
+
+  # higher filter
+  rn2       = 22
+  cum_nz2   = rcma(us_tr$close,rn2)
+  cum_id2   = rcma(us_id$close,rn2)
+  cum_diff2 = cum_id2 - cum_nz2
+  
+  # live price
+  pairs_trade_nasdaq$live_price[i] = tail(us_tr$close,1)
+  
+  # compute entries and exits
+  pairs_trade_nasdaq$buy_signal[i]  = tail(crossover(1.5,cum_diff) & cum_diff2 > 1.5,1)
+  pairs_trade_nasdaq$sell_signal[i] = tail(crossover(cum_diff,-1.0),1)
+  
+  # calculate threshold value for crossover
+  n = nrow(us_tr)
+  pairs_trade_nasdaq$buy_limit[i]  = (cum_id[n] - 1.5)*us_tr$close[n-4]/100 + us_tr$close[n-4] # 1.5 entry thres
+  pairs_trade_nasdaq$sell_limit[i] = (cum_id[n] + 1.0)*us_tr$close[n-4]/100 + us_tr$close[n-4] # -1.0 exit thres
+  
+  # save plot
+  plot_etf(data      = us_tr[6:n,],
+           data_ref  = us_id$close[6:n]/us_id$close[6]*us_tr$close[6],
+           data_diff = cum_diff[6:n],
+           ind_entry = c(), ind_exit = c(),
+           save = TRUE, savename = paste0("nasdaq plot/",pairs_trade_nasdaq$NASDAQ[i],"-",pairs_trade_nasdaq$NYSE[i]))
+
+}
+
+# Summarize Current Status
+NASDAQ_Status = pairs_trade_nasdaq[order(pairs_trade_nasdaq$NASDAQ),]
+View(NASDAQ_Status)
+```

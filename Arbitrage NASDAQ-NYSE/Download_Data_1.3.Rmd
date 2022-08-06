@@ -1,0 +1,266 @@
+
+# -------------------------------------------------------------------------------------------------------------
+# Notes for NYSE + NASDAQ:
+# -------------------------------------------------------------------------------------------------------------
+# - Update ticker list once every 3 months (code uses min 100 data values)
+# - Update database once every 3 months (code uses min 100 data values)
+# 
+# Processing Times:
+# - 80 minutes to re-download all stocks
+# - 80 minutes to update market caps and floats
+# -------------------------------------------------------------------------------------------------------------
+# Notes for NZX:
+# -------------------------------------------------------------------------------------------------------------
+# - Run code before US opens (opens after midnight)
+# -------------------------------------------------------------------------------------------------------------
+
+```{r}
+rm(list=ls())
+library(tidyquant)
+
+desktop_path = file.path(Sys.getenv("USERPROFILE"),"Desktop")
+
+# create folder to save stocks
+dir.create(file.path(desktop_path,"NYSE"))
+dir.create(file.path(desktop_path,"NASDAQ"))
+
+# set up stocks list for both exchanges
+nyse_stocks   = read.csv("NYSE.csv")
+nasdaq_stocks = read.csv("NASDAQ.csv")
+
+# combine stocks into one dataframe
+stocks          = rbind(nyse_stocks[,c("Symbol","Cap","Float")],
+                        nasdaq_stocks[,c("Symbol","Cap","Float")])
+stocks$exchange = c(rep("NYSE",nrow(nyse_stocks)),
+                    rep("NASDAQ",nrow(nasdaq_stocks)))
+stocks$exists = FALSE
+
+# loop through all data and save
+for (i in 1:nrow(stocks)) {
+  
+  # show progress
+  print(paste0(i," - ",stocks$Symbol[i]))
+  
+  # quant mod command to access yahoo finance
+  df = tryCatch({
+                  getSymbols(stocks$Symbol[i],
+                             from="2010-01-01",
+                             to=Sys.Date(),
+                             warnings=FALSE,auto.assign=FALSE)
+                }, 
+                  error = function(cond) {
+                    return(NA)
+                })
+  
+   # whether or not stock was correctly downloaded, write if downloaded, skip if not
+  if (any(is.na(df)) & stocks$exchange[i] != "NZX") { # if current has missing valus and is not NZ stock
+    next
+  } else if (is.null(nrow(df))) { # if current stock doesnt exist
+    next
+  } else if (nrow(df) <= 1) { # if there is only one row of data
+    next
+  } else { # record stock was correctly downloaded
+    stocks$exists[i] = TRUE
+  }
+  
+  # process data downloaded into right form
+  df           = data.frame(df)
+  df$Date      = rownames(df)
+  rownames(df) = NULL
+  colnames(df) = c("open","high","low","close","volume","close.adj","date")
+  df           = df[,c("date","open","high","low","close","volume")]
+
+  # fill in NA rows
+  df[which(is.na(df$close)),2:6] = df[which(is.na(df$close))+1,2:6]
+
+  # save path
+  savepath = file.path(desktop_path,stocks$exchange[i],paste0(stocks$Symbol[i],".csv"))
+  
+  # save stock to file
+  write.csv(df,savepath,row.names=FALSE)
+  
+}
+```
+
+# Compute Pairwise Statistics
+```{r}
+f_nyse   = list.files(file.path(desktop_path,"NYSE"))
+f_nasdaq = list.files(file.path(desktop_path,"NASDAQ"))
+
+out1 = matrix(rep(NA,length(f_nyse)*length(f_nasdaq)),length(f_nyse),length(f_nasdaq))
+out2 = matrix(rep(NA,length(f_nyse)*length(f_nasdaq)),length(f_nyse),length(f_nasdaq))
+out3 = matrix(rep(NA,length(f_nyse)*length(f_nasdaq)),length(f_nyse),length(f_nasdaq))
+
+for (x in 1:length(f_nyse)) {
+  for (y in 1:length(f_nasdaq)) {
+    
+    print(paste0(x," - ",y))
+    
+    us1_df = read.csv(file.path(desktop_path,"NYSE",f_nyse[x]),sep=",")
+    us2_df = read.csv(file.path(desktop_path,"NASDAQ",f_nasdaq[y]),sep=",")
+    
+    if (nrow(us1_df) > nrow(us2_df)) {
+      us1_df = us1_df[(nrow(us1_df)-nrow(us2_df)+1):nrow(us1_df),]
+      us2_df = us2_df[(nrow(us2_df)-nrow(us1_df)+1):nrow(us2_df),]
+    } else {
+      us2_df = us2_df[(nrow(us2_df)-nrow(us1_df)+1):nrow(us2_df),]
+      us1_df = us1_df[(nrow(us1_df)-nrow(us2_df)+1):nrow(us1_df),]
+    }
+    
+    # compute techinical indicators
+    rn       = 5
+    cum_us1  = rcma(us1_df$close,rn)
+    cum_us2  = rcma(us2_df$close,rn)
+    cum_diff = cum_us1 - cum_us2
+    
+    rn2       = 22
+    cum_us21  = rcma(us1_df$close,rn2)
+    cum_nz22  = rcma(us2_df$close,rn2)
+    cum_diff2 = cum_us21 - cum_nz22
+    
+    # initialize array for storage
+    out_ticker      = c()
+    out_exchange    = c()
+    out_ind_entry   = c()
+    out_ind_exit    = c()
+    out_date_entry  = c()
+    out_date_exit   = c()
+    out_price_entry = c()
+    out_price_exit  = c()
+    out_return      = c()
+    
+    # entry indices
+    ind = which(crossover(1.5,cum_diff) & cum_diff2 > 0.5)                  # ********** TUNENABLE x2
+    
+    # loop through every trade and apply strategy
+    for (i in ind) {
+      
+      # set entry price
+      price_entry = us2_df$close[i]
+      
+      # exit criteria
+      ind_exit = crossover(cum_diff[i:length(cum_diff)],-1.0)             # ********** TUNENABLE
+      ind_exit = which(ind_exit)[1] + i - 1
+    
+      # if no exit then skip trade
+      if (is.na(ind_exit)) next
+
+      # compute exit price
+      price_exit = us2_df$close[ind_exit]
+      
+      # compute return
+      return = (price_exit - price_entry)/price_entry*100
+      
+      # store outputs
+      #out_ticker      = c(out_ticker,      etf$ETF[n])
+      #out_exchange    = c(out_exchange,    etf$Exchange[n])
+      out_ind_entry   = c(out_ind_entry,   i)
+      out_ind_exit    = c(out_ind_exit,    ind_exit)
+      out_date_entry  = c(out_date_entry,  as.character(us2_df$date[i]))
+      out_date_exit   = c(out_date_exit,   as.character(us2_df$date[ind_exit]))
+      out_price_entry = c(out_price_entry, price_entry)
+      out_price_exit  = c(out_price_exit,  price_exit)
+      out_return      = c(out_return,      return)
+      
+    }
+    
+    # store all trades
+    out = data.frame(#ticker      = out_ticker,
+                     #exchange    = out_exchange,
+                     ind.entry   = out_ind_entry,
+                     ind.exit    = out_ind_exit,
+                     date.entry  = as.Date(out_date_entry),
+                     date.exit   = as.Date(out_date_exit),
+                     price.entry = out_price_entry,
+                     price.exit  = out_price_exit,
+                     return      = out_return)
+    
+    # apply comission
+    #out$return = out$return - 0.5
+    out = out[!is.na(out$return),]
+    out$outcome = ifelse(out$return > 0, TRUE, FALSE)
+
+    # save
+    out1[x,y] = sum(out$outcome)/nrow(out)*100
+    out2[x,y] = sum(out$outcome)*mean(out$return[out$outcome])/nrow(out) + sum(!out$outcome)*mean(out$return[!out$outcome])/nrow(out)
+    out3[x,y] = unname(cor.test(us1_df$close,us2_df$close)$estimate) # pearson correlation
+    
+  }
+}
+
+colnames(out1) = gsub(".csv","",f_nasdaq)
+rownames(out1) = gsub(".csv","",f_nyse)
+
+colnames(out2) = gsub(".csv","",f_nasdaq)
+rownames(out2) = gsub(".csv","",f_nyse)
+
+colnames(out3) = gsub(".csv","",f_nasdaq)
+rownames(out3) = gsub(".csv","",f_nyse)
+
+write.csv(out1,"1_win_rates.csv")
+write.csv(out2,"2_expecations.csv")
+write.csv(out3,"3_correlation.csv")
+```
+
+
+# Load all important info (takes a while)
+```{r}
+# important pairwise info
+out1 = read.csv("1 - win rates.csv",header=TRUE)
+row.names(out1) = out1$X
+out1 = out1[,-1]
+
+out2 = read.csv("2 - expecations.csv",header=TRUE)
+row.names(out2) = out2$X
+out2 = out2[,-1]
+
+out3 = read.csv("3 - correlation.csv",header=TRUE)
+row.names(out3) = out3$X
+out3 = out3[,-1]
+
+# set up file paths for NYSE and NASDAQ
+f_nyse = list.files(file.path(desktop_path,"NYSE"))
+f_nasdaq = list.files(file.path(desktop_path,"NASDAQ"))
+
+# loop through both and compute number of rows for each individual stock
+nyse_n = rep(NA,length(f_nyse))
+nasdaq_n = rep(NA,length(f_nasdaq))
+
+for (i in 1:length(nyse_n)) {
+  nyse_n[i] = nrow(read.csv(file.path(desktop_path,"NYSE",f_nyse[i]),sep=","))
+}
+
+for (i in 1:length(nasdaq_n)) {
+  nasdaq_n[i] = nrow(read.csv(file.path(desktop_path,"NASDAQ",f_nasdaq[i]),sep=","))
+}
+
+# store names, rowname = stock, row content = number of samples
+nyse_n = data.frame(nyse_n)
+rownames(nyse_n) = gsub(".csv","",f_nyse)
+
+nasdaq_n = data.frame(nasdaq_n)
+rownames(nasdaq_n) = gsub(".csv","",f_nasdaq)
+```
+
+# Find Pairs To Trade
+```{r}
+# 0.99 is optimal for simulation
+median(out2[out3 >= 0.99], na.rm=TRUE)
+
+# get stocks with high overall correlations
+ind = which(out3 >= 0.99, arr.ind=TRUE)
+rownames(ind) = NULL
+
+# col 1 = NYSE, col 2 = NASDAQ
+pairs = cbind(rownames(out1)[ind[,1]], colnames(out1)[ind[,2]])
+colnames(pairs) = c("NYSE","NASDAQ")
+
+# filter out stocks with small number of samples
+col1_n = nyse_n[pairs[,1],]
+col2_n = nasdaq_n[pairs[,2],]
+
+pairs = pairs[col1_n > 250 & col2_n > 250,]
+
+# write to output
+#write.csv(pairs,"pairs.csv",row.names=FALSE)
+```

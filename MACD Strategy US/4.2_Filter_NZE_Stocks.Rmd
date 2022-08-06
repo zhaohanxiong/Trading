@@ -1,0 +1,50 @@
+
+# Initialization
+```{r}
+rm(list=ls())
+source("Utils.R")
+```
+
+# Load and Run MACD strategy
+```{r}
+exchange = "nze"
+
+# get ticker list
+ticker_ls = list.files(file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(exchange," stocks")))
+ticker_ls = gsub(".csv","",ticker_ls)
+
+# set up stocks
+stocks = read.csv(paste0(toupper(exchange),".csv"))
+stocks$FullData = NA
+
+# get caps
+stocks$Cap = as.numeric(gsub(",","",gsub("\\$","",stocks$Cap)))/1e6
+
+# read stock data
+for (i in 1:nrow(stocks)) {
+    
+    print(stocks$Symbol[i])
+  
+    # load stock if it exists
+    if (sum(stocks$Symbol[i] == ticker_ls) > 0) {
+      
+      # load data
+      path    = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(exchange," stocks"))
+      df      = read.csv(paste0(path,"/",stocks$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+      df$date = as.Date(df$date)
+      
+      # find number of gaps longer than 3, means lots of missing data
+      stocks$FullData[i] = sum(diff(df$date[df$date>as.Date("2020-01-01")])>3,na.rm=TRUE)
+
+    }
+    
+}
+
+# filter data
+stocks = stocks[!is.na(stocks$FullData),]
+stocks$FullData = ifelse(stocks$FullData>11,"n","y")
+
+# save
+write.csv(stocks,paste0(toupper(exchange),".csv"),row.names=FALSE)
+```
+

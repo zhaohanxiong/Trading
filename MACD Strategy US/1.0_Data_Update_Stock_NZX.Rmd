@@ -1,0 +1,108 @@
+
+# Download Updated Data
+```{r}
+rm(list=ls())
+
+# ------------------------------------------------------------------------------
+# select start date
+start_date = "DATE(2021,01,15)"
+# ------------------------------------------------------------------------------
+
+# function to download google spreadsheet ticker
+googlefinance_single = function(ticker   = "NZ50G",
+                                exchange = "NZE",
+                                start    = start_date,
+                                stop     = paste0("DATE(",gsub("-",",",Sys.Date()),")")) {
+  return(
+    paste0( "= GOOGLEFINANCE(\"" , exchange , ":" , ticker, "\",\"all\"," , start , "," , stop , ",\"DAILY\")" )
+  )
+}
+
+# Load data
+setwd(file.path(Sys.getenv("USERPROFILE"),"Desktop"))
+nzx = list.files("nzx stocks")
+nzx = gsub(".csv","",nzx)
+
+# loop through tickers and generate excel formula
+xlsx = c()
+for (i in 1:length(nzx)) {
+  
+  # input with ticker and exchange symbols
+  s = googlefinance_single(nzx[i], "NZX")
+
+  # 6 column space between strings
+  xlsx = c(xlsx,c(s,rep("",5)))
+
+}
+
+# get col names
+xlsx_names = c()
+for (i in 1:length(nzx)) {
+  xlsx_names = c(xlsx_names, c(nzx[i],rep("",5)))
+}
+
+# write to output, default to desktop
+xlsx           = data.frame(t(xlsx))
+colnames(xlsx) = xlsx_names
+
+write.csv(xlsx,file.path(Sys.getenv("USERPROFILE"),"Desktop","temp.csv"),row.names=FALSE)
+```
+
+
+# Manual Step for Downloading All Selected Ticker Data
+1) Upload file generated in the code block above is uploaded onto google drive 
+2) Converet file to a google sheet (formula will execute automatically)
+3) Go to "File" -> "Publish to the Web" with type = ".csv", then click "Publish"
+4) Using the link obtained from publishing, copy paste URL into new webpage and download the file
+
+
+# Append Latest New Data
+```{r}
+# read downloaded file from desktop
+setwd(file.path(Sys.getenv("USERPROFILE"),"Desktop"))
+all_dat = read.csv(paste0("temp - temp.csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+
+# loop through every 6 columns and save to csv
+for (i in seq(1,ncol(all_dat),by=6)) {
+
+  # current ticker processing
+  edit_ticker = colnames(all_dat)[i]
+  edit_ticker = gsub("[^A-Z]","",edit_ticker)
+  print(edit_ticker)
+  
+  # extract data for 1 ticker
+  temp = all_dat[2:nrow(all_dat),i:(i+5)]      # get relevant columns
+  colnames(temp) = tolower(all_dat[1,i:(i+5)]) # define column names
+  temp = temp[temp[,1]!="",]                   # remove NA rows
+  
+  # change format of dates
+  col1 = unlist(strsplit(temp[,1]," "))[c(TRUE,FALSE)]
+
+  # if there is data
+  if (!is.null(col1)) {
+  
+    # format columns
+    temp[,1]   = as.Date(col1,format="%m/%d/%Y") # as.Date(col1,format="%d/%m/%Y") # 
+    temp[,1]   = as.character(temp[,1])
+    temp[,2:6] = as.numeric(unlist(temp[,2:6]))
+    
+    # load stock
+    edit_dat   = read.csv(paste0("nzx stocks/",edit_ticker,".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+    
+    # only append if data is not there
+    current_last_day  = as.Date(edit_dat$date[nrow(edit_dat)],format="%Y-%m-%d")
+    updated_first_day = as.Date(temp$date[1],format="%Y-%m-%d")
+    if (current_last_day < updated_first_day) {
+      
+      # append to stock
+      write_dat  = rbind(edit_dat,temp)
+      
+      # append and write to file
+      write.csv(write_dat,paste0("nzx stocks/",edit_ticker,".csv"),row.names=FALSE)
+      
+    }
+
+  }
+  
+}
+```

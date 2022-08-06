@@ -1,0 +1,128 @@
+
+
+-------------------------------------------------------------------------------------------------------
+  Nasdaq Ticker List of Symbols
+    
+    https://www.interactivebrokers.com/en/index.php?f=2222&exch=arca&showcategories=
+-------------------------------------------------------------------------------------------------------
+
+# Load all nysearca symbols
+```{r}
+df      = read.csv("NYSEARCA.csv",sep=",",stringsAsFactors=FALSE)
+df$Data = NA
+```
+
+-------------------------------------------------------------------------------------------------------
+  Google Sheet Function Format Examples:
+  
+    = GOOGLEFINANCE("NZE:MDZ","all",DATE(1970,1,1),DATE(2020,6,7),"DAILY") 
+      
+    Gives 6 columns: "Date","Open","High","Low","Close","Volume"
+      
+    = GOOGLEFINANCE("NZE:MDZ","close",DATE(1970,1,1),DATE(2020,6,7),"DAILY") 
+    
+    Gives 2 columns: "Date","Close"
+-------------------------------------------------------------------------------------------------------
+
+
+# Generate Excel Formulas for Downloading Tickers to Upload to Google Sheets 
+```{r}
+# need to iterate through each one, one data at a time due to memory restrictions
+          #   1    2    3    4    5    6    7    8    9   10   11   12   13   14   15   16   17   18   19   20
+i1 = 2401 #   1  151  301  451  601  751  901 1051 1201 1351 1501 1651 1801 1951 2101 2251 2401 2551 2701 2851
+i2 = 2438 # 150  300  450  600  750  900 1050 1200 1350 1500 1650 1800 1950 2100 2250 2400 2550 2700 2850 3000
+
+# define corresponding exchanges
+##########################################################################################################
+# create google sheet formulas for ETF tickers
+##########################################################################################################
+googlefinance_single = function(ticker   = "NZ50G",
+                                exchange = "NZE",
+                                start    = "DATE(2000,1,1)",
+                                stop     = paste0("DATE(",gsub("-",",",Sys.Date()),")")) {
+  return(
+    paste0( "= GOOGLEFINANCE(\"" , exchange , ":" , ticker, "\",\"all\"," , start , "," , stop , ",\"DAILY\")" )
+  )
+}
+
+# loop through tickers and generate excel formula
+xlsx = c()
+for (i in i1:i2) {
+  
+  # input with ticker and exchange symbols
+  s = googlefinance_single(df$Symbol[i], "NYSEARCA")
+
+  # 6 column space between strings
+  xlsx = c(xlsx,c(s,rep("",5)))
+
+}
+
+# write to output, default to desktop
+write.csv(t(xlsx),file.path(Sys.getenv("USERPROFILE"),"Desktop","temp.csv"),row.names=FALSE)
+```
+
+
+# Manual Step for Downloading All Selected Ticker Data
+1) Upload file generated in the code block above is uploaded onto google drive 
+2) Converet file to a google sheet (formula will execute automatically)
+3) Go to "File" -> "Publish to the Web" with type = ".csv", then click "Publish"
+4) Using the link obtained from publishing, copy paste URL into new webpage and download the file
+
+
+# Process and Save Ticker Data Downloaded from Google Sheets Chunks
+```{r}
+setwd(file.path(Sys.getenv("USERPROFILE"),"Desktop"))
+
+count = 1
+
+# loop through each doc
+for (j in 1:17) {
+
+  print(j)
+  # read donwloaded file from desktop
+  path    = paste0("temp - temp ",j,".csv")
+  all_dat = read.csv(path,sep=",",header=TRUE,stringsAsFactors=FALSE)
+  
+  # loop through every 6 columns and save to csv
+  for (i in seq(1,ncol(all_dat),by=6)) {
+    
+    # extract data for 1 ticker
+    temp = all_dat[2:nrow(all_dat),i:(i+5)]      # get relevant columns
+    colnames(temp) = tolower(all_dat[1,i:(i+5)]) # define column names
+    temp = temp[temp[,1]!="",]                   # remove NA rows
+    
+    # change format of dates
+    col1 = unlist(strsplit(temp[,1]," "))[c(TRUE,FALSE)]
+  
+    if (!is.null(col1)) {
+    
+      # format columns
+      if (j == 20) {
+        temp[,1]   = as.Date(col1,format="%m/%d/%Y")
+      } else {
+        temp[,1]   = as.Date(col1,format="%d/%m/%Y")
+      }
+      temp[,2:6] = as.numeric(unlist(temp[,2:6]))
+    
+      # write to file
+      write.csv(temp,paste0("nysearca stocks/",df$Symbol[count],".csv"),row.names=FALSE)
+      
+      # if there is data for this ticker
+      df$Data[count] = "Y"
+      
+    } else {
+      
+      # if there is no data for this ticker
+      df$Data[count] = "N"
+      
+    }
+    
+    count = count + 1
+      
+  }
+
+}
+
+# Save NASDAQ Ticker Symbols and Info into Spreadsheet
+write.csv(df,"NYSEARCA.csv",row.names=FALSE)
+```

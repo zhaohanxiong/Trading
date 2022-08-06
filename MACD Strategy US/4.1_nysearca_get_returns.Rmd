@@ -1,0 +1,75 @@
+
+# Initialization
+```{r}
+rm(list=ls())
+source("Utils.R")
+```
+
+# Load and Compute Annualized Returns
+```{r}
+exchange = "nysearca"
+
+# set up stocks
+stocks = read.csv(paste0(toupper(exchange),".csv"))
+stocks$Length = NA
+stocks$Return = NA
+stocks$Annualized_Return = NA
+
+# read stock data
+for (i in 1:nrow(stocks)) {
+    
+    print(stocks$Symbol[i])
+  
+    # load stock
+    path    = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(exchange," stocks"))
+    df      = read.csv(paste0(path,"/",stocks$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+    df$date = as.Date(df$date)
+    
+    # compute return
+    return      = (df$close[nrow(df)] - df$close[1])/df$close[1]
+    time_length = as.numeric(df$date[nrow(df)] - df$date[1])
+    
+    # store values
+    stocks$Length[i] = time_length/365.25
+    stocks$Return[i] = return
+    stocks$Annualized_Return[i] = ifelse(time_length>366, (return^(365.25/time_length)-1)*100, NA)
+    stocks$Annualized_Return[i] = ifelse(is.nan(stocks$Annualized_Return[i]),NA,stocks$Annualized_Return[i])
+    
+}
+
+# visualize and save
+hist(stocks$Annualized_Return)
+#write.csv(stocks,"NYSEARCA.csv",row.names=FALSE)
+
+# show report
+p = list()
+p[[1]] = sprintf("Proportion of Funds outperforming SP500 index: %.0f%% (Avg Length %0.1f Yrs)", 
+                 sum(stocks$Annualized_Return>10,na.rm=TRUE)/nrow(stocks)*100,mean(stocks$Length[stocks$Annualized_Return>10],na.rm=TRUE))
+p[[2]] = sprintf("Proportion of Funds with Positive Cumulative Returns: %.0f%%",sum(stocks$Annualized_Return>0,na.rm=TRUE)/nrow(stocks)*100)
+
+cat(paste0(unlist(p),collase="\n"))
+```
+
+# Load Computed NYSEARCA Directly
+```{r}
+# set up stocks
+stocks = read.csv("NYSEARC.csv")
+
+# visualize
+hist(stocks$Annualized_Return,xlab="Annualized Return",ylab="Number of Funds",main="NYSEARCA ETF Summary")
+abline(v=10,col="blue",lwd=3,lty=2)
+abline(v=15,col="red",lwd=3,lty=2)
+
+legend("topleft",c("SP500","NASDAQ"),col=c("blue","red"),lty=c(1,1),lwd=c(5,5))
+
+# show report
+p = list()
+p[[1]] = sprintf("Proportion of Funds outperforming SP500 Index: %.0f%% (Avg Length %0.1f Yrs)", 
+                 sum(stocks$Annualized_Return>10,na.rm=TRUE)/nrow(stocks)*100,mean(stocks$Length[stocks$Annualized_Return>=10],na.rm=TRUE))
+p[[2]] = sprintf("Proportion of Funds outperforming NASDAQ Composite Index: %.0f%% (Avg Length %0.1f Yrs)", 
+                 sum(stocks$Annualized_Return>15,na.rm=TRUE)/nrow(stocks)*100,mean(stocks$Length[stocks$Annualized_Return>=15],na.rm=TRUE))
+p[[3]] = sprintf("Proportion of Funds with Positive Cumulative Returns: %.0f%%",sum(stocks$Annualized_Return>0,na.rm=TRUE)/nrow(stocks)*100)
+
+cat(paste0(unlist(p),collase="\n"))
+```
+

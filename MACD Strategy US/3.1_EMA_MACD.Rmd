@@ -1,0 +1,250 @@
+
+# Initialization
+```{r}
+rm(list=ls())
+source("Utils.R")
+```
+
+# EMA Strategy
+```{r}
+# techinicals
+ema20  = ema(dat_i$close, 20)
+ema50  = ema(dat_i$close, 50)
+ema100 = ema(dat_i$close, 100)
+ema200 = ema(dat_i$close, 200)
+
+# bullish candle stick patterns
+bull_candle      = rep(0,2)
+candle_cross_ema = rep(FALSE,2)
+enter_trade      = rep(FALSE,2)
+
+for (i in 3:nrow(dat_i)) {
+  
+  # bullish candle entry exist
+  pattern     = bullish_candle(dat_i[(i-2):i,])
+  bull_candle = c(bull_candle, pattern)
+  
+  # current price is at ema support
+  candle_action20  = dat_i$low[i] < ema20[i] & dat_i$close[i] > ema20[i]
+  candle_action50  = dat_i$low[i] < ema50[i]*1.01 & dat_i$close[i] > ema50[i]
+  candle_action100 = dat_i$low[i] < ema100[i]*1.025 & dat_i$close[i] > ema100[i]
+  candle_action200 = dat_i$low[i] < ema200[i]*1.05 & dat_i$close[i] > ema200[i]
+  ema_support      = any(candle_action20,candle_action50,candle_action100,candle_action200)
+  candle_cross_ema = c(candle_cross_ema, ema_support)
+  
+  # enter trade
+  price_target = dat_i$close[i]*1.001 < max(c(dat_i$open[i+1],dat_i$high[i+1],dat_i$low[i+1],dat_i$close[i+1]))
+  enter_trade  = c(enter_trade, price_target)
+  
+  # # plot candlestick patterns for visualization
+  # if (nchar(pattern) > 0 & FALSE) {
+  #   
+  #   data = dat_i[(i-5):(i+1),]
+  #   
+  #   png(paste0(paste0("C:/Users/Administrator/Desktop/temp/",i," - ",pattern),".png"), width = 500, height = 500)
+  #   
+  #   xrange = range(data$date)
+  #   yrange = range(c(data$high,data$low),na.rm=TRUE)
+  # 
+  #   par(mar=c(1,4,1,1))
+  #   plot(-999,-999,xlim=xrange,ylim=yrange,xlab="",ylab="Price (USD)",xaxt="n",yaxt="n")
+  #   
+  #   colors = ifelse(data$close >= data$open,"forestgreen","tomato")
+  #   segments(x0  = data$date, y0 = data$low
+  #           ,x1  = data$date, y1 = data$high
+  #           ,col = colors, lwd=1
+  #   )
+  #   rect(xleft   = data$date-0.3
+  #       ,ybottom = ifelse(data$close >= data$open,data$open,data$close)
+  #       ,xright  = data$date+0.3
+  #       ,ytop    = ifelse(data$close >= data$open,data$close,data$open)
+  #       ,col     = colors,border=colors
+  #   )
+  #   
+  #   dev.off()
+  #   
+  # }
+}
+
+# bullish pattern at ema support
+ema_entry = which(nchar(bull_candle) > 0 & candle_cross_ema & enter_trade)
+ema_entry = ema_entry[ema_entry>100]
+
+# loop through macd entries, how to find prior swing low, use that as stop loss, and take profit is 1.5x greater
+out_date_entry = as.Date(c())
+out_date_exit  = as.Date(c())
+out_return = as.numeric(c())
+
+for (m in ema_entry) {
+  
+  # get local region of current price/date
+  price     = dat_i$close[(m - 100):m]
+  price_low = dat_i$low[(m - 100):m]
+  date      = dat_i$date[(m - 100):m]
+  
+  # compute prior swing low
+  price_smooth = smooth(c(price, price[length(price)]*seq(1.01,by=0.01,length=50)),0.1)[1:length(price)]
+  minimas      = local_extrema(price_smooth,max=FALSE)
+  min_ind      = minimas[length(minimas)]
+  min_date     = date[min_ind]
+  
+  # find minimum in local region of min_date
+  min_date = date[which.min(price_low[max(c(1,(min_ind - 5))):min(c(length(price_low),(min_ind + 5)))]) + min_ind - 6]
+  
+  # set prices
+  price_entry = dat_i$close[m]*1.001 # enter at next candle
+  price_stop  = dat_i$low[dat_i$date == min_date]
+  price_profit= dat_i$close[m] * (1 + (price_entry - price_stop)/price_entry * 1.5)
+  
+  # find which price is hit first
+  ind_stop = which(dat_i$close[m:nrow(dat_i)] <= price_stop)[1] + m - 1
+  ind_exit = which(dat_i$close[m:nrow(dat_i)] >= price_profit)[1] + m - 1
+  
+  outcome   = which.min(c(ind_stop,ind_exit))
+  exit_date = min(c(ind_stop,ind_exit),na.rm=TRUE)
+  
+  # set dates
+  date_entry = dat_i$date[m+1] # enter at next candle
+  date_stop  = min_date
+  date_exit  = dat_i$date[exit_date]
+  
+  # compute profits/loss
+  return = ifelse(outcome==1,-1,1.5)
+
+  # Plot Segment where Trade is Occuring
+  if (FALSE) {
+    plot_stock(dat_i[(m - 50):(m + 50),],
+               emas=list(ema200[(m - 50):(m + 50)],
+                         ema100[(m - 50):(m + 50)],
+                         ema50[(m - 50):(m + 50)],
+                         ema20[(m - 50):(m + 50)]),
+               entry=c(date_entry),
+               stop=c(date_stop),
+               exit=c(date_exit),
+               save=TRUE,savename=paste0("C:/Users/Administrator/Desktop/temp/",m))
+  }
+ 
+  # save data
+  out_date_entry = c(out_date_entry,date_entry)
+  out_date_exit  = c(out_date_exit,date_exit)
+  out_return = c(out_return, return)
+  
+}
+
+# write to data frame
+out = data.frame(date_entry = as.Date(out_date_entry),
+                 date_exit  = as.Date(out_date_exit),
+                 return     = as.numeric(out_return))
+
+# Summary
+p1 = sprintf("Winning Percentage: %0.1f%% (%.0f/%.0f)\n",sum(out_return>0)/length(out_return)*100,sum(out_return>0),length(out_return))
+p2 = sprintf("Cumulative Return: %0.1f%%\n",tail((cumprod(out_return/100+1)-1)*100,1))
+
+cat(paste0(p1,p2))
+dev.off()
+```
+
+# MACD Strategy
+```{r}
+# techinicals
+ema20  = ema(dat_i$close, 20)
+ema50  = ema(dat_i$close, 50)
+ema100 = ema(dat_i$close, 100)
+ema200 = ema(dat_i$close, 200)
+macd12_26_9 = macd(dat_i$close, 12, 26, 9)
+
+# entry
+macd_cross  = crossover(macd12_26_9$signal,macd12_26_9$MACD)
+
+# entry signals
+macd_entry = which(macd_cross & macd12_26_9$MACD <= 0 & dat_i$close > ema200)
+
+# loop through macd entries, how to find prior swing low, use that as stop loss, and take profit is 1.5x greater
+out_date_entry = as.Date(c())
+out_date_exit  = as.Date(c())
+out_return = as.numeric(c())
+
+for (m in macd_entry) {
+  
+  # get local region of current price/date
+  price     = dat_i$close[(m - 100):m]
+  price_low = dat_i$low[(m - 100):m]
+  date      = dat_i$date[(m - 100):m]
+  
+  # compute prior swing low
+  price_smooth = smooth(c(price, price[length(price)]*seq(1.01,by=0.01,length=50)),0.1)[1:length(price)]
+  minimas      = local_extrema(price_smooth,max=FALSE)
+  min_ind      = minimas[length(minimas)]
+  min_date     = date[min_ind]
+  
+  # find minimum in local region of min_date
+  min_date = date[which.min(price_low[max(c(1,(min_ind - 5))):min(c(length(price_low),(min_ind + 5)))]) + min_ind - 6]
+  
+  # set prices
+  price_entry = dat_i$close[m]
+  price_stop  = dat_i$low[dat_i$date == min_date]
+  price_profit= dat_i$close[m] * (1 + (price_entry - price_stop)/price_entry * 1.5)
+  
+  # find which price is hit first
+  ind_stop = which(dat_i$close[m:nrow(dat_i)] <= price_stop)[1] + m - 1
+  ind_exit = which(dat_i$close[m:nrow(dat_i)] >= price_profit)[1] + m - 1
+  
+  outcome   = which.min(c(ind_stop,ind_exit))
+  exit_date = min(c(ind_stop,ind_exit),na.rm=TRUE)
+  
+  # set dates
+  date_entry = dat_i$date[m]
+  date_stop  = min_date
+  date_exit  = dat_i$date[exit_date]
+  
+  # compute profits/loss
+  return = ifelse(outcome==1,-1,1.5)
+
+  # Plot Segment where Trade is Occuring
+  if (FALSE) {
+    plot_stock(dat_i[(m - 50):(m + 100),],
+               emas=list(ema200[(m - 50):(m + 100)],
+                         ema100[(m - 50):(m + 100)],
+                         ema50[(m - 50):(m + 100)],
+                         ema20[(m - 50):(m + 100)]),
+               entry=c(date_entry),
+               stop=c(date_stop),
+               exit=c(date_exit),
+               save=TRUE,savename=paste0("C:/Users/zxio506/Desktop/",m))
+  }
+ 
+  # save data
+  out_date_entry = c(out_date_entry,date_entry)
+  out_date_exit  = c(out_date_exit,date_exit)
+  out_return = c(out_return, return)
+  
+}
+
+# write to data frame
+out = data.frame(date_entry = as.Date(out_date_entry),
+                 date_exit  = as.Date(out_date_exit),
+                 return     = as.numeric(out_return))
+
+# Summary
+p1 = sprintf("Winning Percentage: %0.1f%% (%.0f/%.0f)\n",sum(out_return>0)/length(out_return)*100,sum(out_return>0),length(out_return))
+p2 = sprintf("Cumulative Return: %0.1f%%\n",tail((cumprod(out_return/100+1)-1)*100,1))
+
+cat(paste0(p1,p2))
+```
+
+
+
+
+# Load and Setup Data
+```{r}
+# set up stocks
+stocks = read.csv("NASDAQ.csv")
+stocks = stocks[,c("Symbol", "Cap", "Float")]
+
+# set file path
+setwd(file.path(Sys.getenv("USERPROFILE"),"Desktop"))
+
+
+# read stock data
+dat_i = read.csv(paste0("nasdaq stocks/", stocks$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+``` 

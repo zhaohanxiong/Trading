@@ -1,0 +1,480 @@
+
+# Initialization
+```{r}
+rm(list=ls())
+
+library(scales)
+
+# ----------------------------------------------------------------------------------------------
+# compute EMA
+ema = function(price,n) {
+  
+  # initialize price with SMA
+  price[n] = mean(price[1:n])
+  
+  # loop through all time steps, and compute step-wise ema
+  for (i in (n+1):length(price)) {
+    price[i] = price[i]*2/(n + 1) + price[i-1]*(1-2/(n + 1))
+  }
+  
+  # set initial prices to NaN since you cannot compute it
+  price[1:(n-1)] = NA
+  
+  return(price)
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# compute macd
+macd = function(price,ma1,ma2,ma_smooth) {
+  
+  # compute macd line
+  MACD   = ema(price, ma1) - ema(price, ma2)
+  
+  # compute signal line
+  signal = c(rep(NA, ma2), ema(MACD[(ma2+1):length(price)], ma_smooth))
+  
+  return(list(MACD=MACD, signal=signal))
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# compute location of cross over
+crossover = function(x1,x2) {
+  
+  # find max time steps
+  l = max(c(length(x1),length(x2)))
+  
+  # duplicate values if only singular numeric value is provided
+  if (length(x1) == 1) x1 = rep(x1,l)
+  if (length(x2) == 1) x2 = rep(x2,l)
+  
+  # find which indices are true, if NA then set as false
+  cross_ind = c(FALSE,x1[1:(l-1)] >= x2[1:(l-1)] & x1[2:l] <= x2[2:l])
+  cross_ind[is.na(cross_ind)] = FALSE
+  
+  return(cross_ind)
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# read nasdaq stock
+read_nasdaq = function(file_path) {
+  
+  dat       = read.csv(paste0(file_path,".csv"),sep=",")
+  dat$date  = as.Date(dat$date,format="%Y-%m-%d")
+  dat$open  = as.numeric(dat$open)
+  dat$high  = as.numeric(dat$high)
+  dat$low   = as.numeric(dat$low)
+  dat$close = as.numeric(dat$close)
+  
+  return(dat)
+
+}
+
+# ----------------------------------------------------------------------------------------------
+# plot selected region
+plot_stock = function(ticker_symbol,ticker_info,data,emas=c(),save=FALSE,savename="") {
+  
+  if (save) png(paste0(savename,".png"), width = 1500, height = 750)
+
+  # set up plot area
+  layout(matrix(1:2,2,1),heights=c(2.5,1))
+  
+  # # # Main Plot
+  # set up plot range
+  xrange = range(data$date)
+  yrange = range(c(data$high,data$low),na.rm=TRUE)
+
+  # initialize plot with margin sizes
+  par(mar=c(1,4,1,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange,xlab="",ylab="Price (USD)",xaxt="n",yaxt="n")
+
+  # add ticker symbol
+  text(diff(xrange)/2+xrange[1],sum(yrange)/2,labels=ticker_symbol,cex=4,col=alpha("black",0.1))
+  
+  # label axis
+  axis(2,at=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=10^(floor(log10(yrange[2]))-1)),-(floor(log10(yrange[2]))-1)),
+       labels=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=10^(floor(log10(yrange[2]))-1)),-(floor(log10(yrange[2]))-1)),las=2)
+  
+  # moving average
+  if (length(emas) > 0) {
+    cols = c("red","orange","aquamarine","blue","purple","black")
+    for (i in 1:length(emas)) {
+      if(nrow(data) > emas[i]) {
+        lines(data$date,ema(data$close, emas[i]),col=cols[i],lwd=2)
+      }
+    }
+  }
+  
+  # construct candlesticks
+  colors = ifelse(data$close >= data$open,"forestgreen","tomato")
+  segments(x0  = data$date, y0 = data$low
+          ,x1  = data$date, y1 = data$high
+          ,col = colors, lwd=1
+  )
+  rect(xleft   = data$date-0.3
+      ,ybottom = ifelse(data$close >= data$open,data$open,data$close)
+      ,xright  = data$date+0.3
+      ,ytop    = ifelse(data$close >= data$open,data$close,data$open)
+      ,col     = colors,border=colors
+  )
+  
+  # # # Volume Plot
+  # set up plot range
+  yrange2 = range(c(0,data$volume/1e6),na.rm=TRUE)
+
+  # initialize plot with margin sizes
+  par(mar=c(6,4,0,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange2,xlab="",ylab="Vol (M)",xaxt="n",las=1)
+  
+  # label axis
+  axis(1,at=seq(xrange[1],xrange[2],by=25),
+     labels=seq(xrange[1],xrange[2],by=25),las=2)
+
+  # add volume
+  rect(xleft   = data$date-0.5
+      ,ybottom = 0
+      ,xright  = data$date+0.5
+      ,ytop    = data$volume/1e6
+      ,col     = colors,border=NA
+  )
+  
+  # add ticker symbol
+  text(xrange[1],yrange2[2]*0.9,labels=ticker_info,cex=1,col="blue",pos=4)
+  
+  if (save) dev.off()
+
+}
+
+# ----------------------------------------------------------------------------------------------
+# evaluate long strategy based on a entry signals
+strategy_1 = function(data,entries,R,long=TRUE) {
+
+  # max time to hold the position
+  max_hold = 100
+  
+  # initialize output trade file
+  summary  = data.frame(time_entry=NA,price_entry=NA,time_exit=NA,price_exit=NA,return=NA,length=NA)
+  temp_row = rep(NA,ncol(summary)) # matches with the above in terms of columns
+  
+  for (i in 1:length(entries)) {
+    
+    # simplify current entry index
+    ii = entries[i]
+    
+    # define 1st bracket trade (long/short adjusted with "s")
+    if (long) {
+      bracket_prof1 = which(data$close[ii:(ii+max_hold)] >= (data$close[ii]*(1 + R/100))) # 1st profit target
+      bracket_loss1 = which(data$close[ii:(ii+max_hold)] <= (data$close[ii]*(1 - R/100))) # 1st stop loss
+    } else {
+      bracket_prof1 = which(data$close[ii:(ii+max_hold)] <= (data$close[ii]*(1 - R/100))) # 1st profit target
+      bracket_loss1 = which(data$close[ii:(ii+max_hold)] >= (data$close[ii]*(1 + R/100))) # 1st stop loss
+    }
+    
+    # if no trades are found, just set it as max hold time, otherwise, take the first trade signal
+    bracket_prof1 = ifelse(length(bracket_prof1)==0,max_hold,bracket_prof1[1])
+    bracket_loss1 = ifelse(length(bracket_loss1)==0,max_hold,bracket_loss1[1])
+    
+    # # # # # the trade progression starts here
+    # hits stop loss straight away
+    if (bracket_loss1 <= bracket_prof1) {
+      exit   = ii + bracket_loss1 - 1
+      p_exit = data$close[ii]*(1 - R/100*ifelse(long,1,-1))
+      return = -R
+    } 
+    # take profit
+    else {
+      exit   = ii + bracket_prof1 - 1
+      p_exit = data$close[ii]*(1 + R/100*ifelse(long,1,-1))
+      return = R
+    }
+
+    # define output to append to summary
+    temp_row[1] = as.character(data$date[ii])        # entry date
+    temp_row[2] = data$close[ii]                     # entry price
+    temp_row[3] = as.character(data$date[exit])      # exit date
+    temp_row[4] = p_exit                             # exit price
+    temp_row[5] = return                             # return on trade
+    temp_row[6] = exit - ii                          # trade time length in units (minutes)
+   
+    # fix dates and filter data frame if there is an issue
+    if (is.na(temp_row[3])) break
+    if (nchar(as.character(temp_row[1])) <= 10) temp_row[1] = paste0(temp_row[1]," 00:00:00")
+    if (nchar(as.character(temp_row[3])) <= 10) temp_row[3] = paste0(temp_row[3]," 00:00:00")
+    
+    summary = rbind(summary,temp_row)
+    
+  }
+  
+  # assign classes to data frame
+  summary = summary[!is.na(summary$return),]
+  rownames(summary)   = NULL
+  summary$time_entry  = as.POSIXct(summary$time_entry, format="%Y-%m-%d %H:%M:%S")
+  summary$time_exit   = as.POSIXct(summary$time_exit, format="%Y-%m-%d %H:%M:%S")
+  summary$price_entry = as.numeric(summary$price_entry)
+  summary$price_exit  = as.numeric(summary$price_exit)
+  summary$return      = round(as.numeric(summary$return),4)
+  summary$length      = as.numeric(summary$length)
+  
+  # Compute Summary
+  out = list()
+  out[[1]] = sprintf("Winning Trades: %.0f/%.0f",   sum(summary$return >= 0),nrow(summary))
+  out[[2]] = sprintf("Winning Percentage: %0.1f%%", sum(summary$return >= 0)/nrow(summary)*100)
+  out[[3]] = sprintf("Average Position Time Length: %0.1f Days", mean(summary$length))
+  out[[4]] = sprintf("Expected ROI: %0.1f%%",       sum(summary$return >= 0)*R - sum(summary$return < 0)*R)
+  
+  # write summary to file
+  txt = paste0("*****",ifelse(long," Long "," Short "),"*****\n")
+  txt = paste0(txt,paste(unlist(out),collapse="\n"),"\n")
+  write(txt,file="output.txt",append=TRUE)
+  
+  print(sprintf("%s",txt))
+  
+  return(summary)
+  
+}
+
+# # ----------------------------------------------------------------------------------------------
+# # evaluate long strategy based on a entry signals
+# strategy_2 = function(data,entries,R,long=TRUE) {
+# 
+#   # max time to hold the position
+#   max_hold = 100
+#   
+#   # initialize output trade file
+#   summary  = data.frame(time_entry=NA,price_entry=NA,time_exit=NA,price_exit=NA,return=NA,length=NA)
+#   temp_row = rep(NA,ncol(summary)) # matches with the above in terms of columns
+#   
+#   for (i in 1:length(entries)) {
+#     
+#     # simplify current entry index
+#     ii = entries[i]
+#     
+#     # define 1st bracket trade (long/short adjusted with "s")
+#     if (long) {
+#       bracket_prof1 = which(data$close[ii:(ii+max_hold)] >= (data$close[ii]*(1 + R/100))) # 1st profit target
+#       bracket_loss1 = which(data$close[ii:(ii+max_hold)] <= (data$close[ii]*(1 - R/100))) # 1st stop loss
+#     } else {
+#       bracket_prof1 = which(data$close[ii:(ii+max_hold)] <= (data$close[ii]*(1 - R/100))) # 1st profit target
+#       bracket_loss1 = which(data$close[ii:(ii+max_hold)] >= (data$close[ii]*(1 + R/100))) # 1st stop loss
+#     }
+#     
+#     # if no trades are found, just set it as max hold time, otherwise, take the first trade signal
+#     bracket_prof1 = ifelse(length(bracket_prof1)==0,max_hold,bracket_prof1[1])
+#     bracket_loss1 = ifelse(length(bracket_loss1)==0,max_hold,bracket_loss1[1])
+#     
+#     # # # # # the trade progression starts here
+#     # hits stop loss straight away
+#     if (bracket_loss1 <= bracket_prof1) {
+#       exit   = ii + bracket_loss1 - 1
+#       p_exit = data$close[ii]*(1 - R/100*ifelse(long,1,-1))
+#       return = -R
+#     } 
+#     # hits first take profit target
+#     else {
+#       
+#       # define 2nd bracket trade
+#       if (long) {
+#         bracket_prof2 = which(data$close[(ii+bracket_prof1-1):(ii+max_hold)] >= (data$close[ii]*(1 + 2.0*R/100))) # 2nd profit target
+#         bracket_loss2 = which(data$close[(ii+bracket_prof1-1):(ii+max_hold)] <= data$close[ii])                   # 2nd stop loss
+#       } else {
+#         bracket_prof2 = which(data$close[(ii+bracket_prof1-1):(ii+max_hold)] <= (data$close[ii]*(1 - 2.0*R/100))) # 2nd profit target
+#         bracket_loss2 = which(data$close[(ii+bracket_prof1-1):(ii+max_hold)] >= data$close[ii])                   # 2nd stop loss
+#       }
+#       
+#       bracket_prof2 = ifelse(length(bracket_prof2)==0,max_hold,bracket_prof2[1])
+#       bracket_loss2 = ifelse(length(bracket_loss2)==0,max_hold,bracket_loss2[1])
+#       
+#       # hits second stop loss (break even point)
+#       if (bracket_loss2 <= bracket_prof2) {
+#         exit   = (ii+bracket_prof1-1) + bracket_loss2 - 1
+#         p_exit = data$close[ii]
+#         return = 0.25*R #0.5*R
+#       } 
+#       # takes second take profit target
+#       else {
+#         exit   = (ii+bracket_prof1-1) + bracket_prof2 - 1
+#         p_exit = data$close[ii]*(1 + 2.0*R/100*ifelse(long,1,-1))
+#         return = 1.75*R #1.5*R
+#       }
+#     }
+# 
+#     # define output to append to sumamry
+#     temp_row[1] = as.character(data$date[ii])        # entry date
+#     temp_row[2] = data$close[ii]                     # entry price
+#     temp_row[3] = as.character(data$date[exit])      # exit date
+#     temp_row[4] = p_exit                             # exit price
+#     temp_row[5] = return                             # return on trade
+#     temp_row[6] = exit - ii                          # trade time length in units (minutes)
+#    
+#     # fix dates and filter data frame if there is an issue
+#     if (is.na(temp_row[3])) break
+#     if (nchar(as.character(temp_row[1])) <= 10) temp_row[1] = paste0(temp_row[1]," 00:00:00")
+#     if (nchar(as.character(temp_row[3])) <= 10) temp_row[3] = paste0(temp_row[3]," 00:00:00")
+#     
+#     summary = rbind(summary,temp_row)
+#     
+#   }
+#   
+#   # assign classes to data frame
+#   summary = summary[!is.na(summary$return),]
+#   rownames(summary)   = NULL
+#   summary$time_entry  = as.POSIXct(summary$time_entry, format="%Y-%m-%d %H:%M:%S")
+#   summary$time_exit   = as.POSIXct(summary$time_exit, format="%Y-%m-%d %H:%M:%S")
+#   summary$price_entry = as.numeric(summary$price_entry)
+#   summary$price_exit  = as.numeric(summary$price_exit)
+#   summary$return      = round(as.numeric(summary$return),4)
+#   summary$length      = as.numeric(summary$length)
+#   
+#   # Compute Summary
+#   out = list()
+#   out[[1]] = sprintf("Winning Trades: %.0f/%.0f",   sum(summary$return >= 0),nrow(summary))
+#   out[[2]] = sprintf("Winning Percentage: %0.1f%%", sum(summary$return >= 0)/nrow(summary)*100)
+#   out[[3]] = sprintf("Cumulative Return: %0.1f%%",  (cumprod(1+summary$return/100)[nrow(summary)]-1)*100)
+#   out[[4]] = sprintf("Average Position Time Length: %0.1f Days", mean(summary$length))
+#   
+#   # write summary to file
+#   txt = paste0("*****",ifelse(long," Long "," Short "),"*****\n")
+#   txt = paste0(txt,paste(unlist(out),collapse="\n"),"\n")
+#   write(txt,file="output.txt",append=TRUE)
+# 
+#   return(summary)
+#   
+# }
+```
+
+
+
+# Load NASDAQ Ticker List and Pre-Process
+```{r}
+# --- set paths -------------------------------------------------------------------- 
+path_database = "C:/Users/Administrator/Desktop/nasdaq stocks/"
+path_image    = "C:/Users/Administrator/Desktop/temp/"
+# ----------------------------------------------------------------------------------
+
+# load NASDAQ database
+nasdaq = read.csv("NASDAQ.csv",sep=",",stringsAsFactors=FALSE)
+
+# define cap ranges
+ranges   = c("-","M","B","T")
+ranges_n = c(NA,1e6,1e9,1e12)
+
+# process market cap values
+cap_val  = as.numeric(sapply(nasdaq$Cap,function(x) substr(x,1,nchar(x)-1)))
+cap_size = unname(sapply(nasdaq$Cap,function(x) substr(x,nchar(x),nchar(x))))
+
+nasdaq$N_cap = unname(sapply(cap_size,function(x) ranges_n[ranges==x]))*cap_val
+
+# process market float values
+float_val  = as.numeric(sapply(nasdaq$Float,function(x) substr(x,1,nchar(x)-1)))
+float_size = unname(sapply(nasdaq$Float,function(x) substr(x,nchar(x),nchar(x))))
+
+nasdaq$N_float = unname(sapply(float_size,function(x) ranges_n[ranges==x]))*float_val
+
+# add string to summarize stock
+nasdaq$info = sprintf("Market Cap %s, Float %s", nasdaq[,c("Cap")], nasdaq[,c("Float")])
+
+# filter stocks
+nasdaq = nasdaq[!is.na(nasdaq$N_cap),
+                c("Symbol","Security.Name","Market.Category","N_cap","N_float","info")]
+```
+
+
+
+# Plot 1 Ticker
+```{r}
+# --- define ticker ----------------------------------------------------------------
+t = "BLNK"
+# ----------------------------------------------------------------------------------
+
+# read data
+df = read_nasdaq(paste0(path_database,t))
+
+# plot stock
+plot_stock(ticker_symbol = t
+          ,ticker_info   = nasdaq$info[nasdaq$Symbol==t]
+          ,data          = df[max(c(nrow(df)-500,1)):nrow(df),]
+          #,data          = df[1:nrow(df),]
+          )
+```
+
+
+
+# Plot and Save All Tickers
+```{r}
+for (i in 1:nrow(nasdaq)) {
+  
+  # ticker
+  t = nasdaq$Symbol[i]
+  
+  # load data
+  t_df = read_nasdaq(paste0(path_database,t))
+  
+  # save images of stock price action, keep price action leading up to it
+  plot_stock(ticker_symbol = t
+            ,ticker_info   = nasdaq$info[nasdaq$Symbol==t]
+            ,data          = t_df
+            ,emas          = c(20,50,100,200)
+            ,save     = TRUE
+            ,savename = paste0(path_image,t)
+            )
+  
+}
+```
+
+
+
+# MACD and EMA strategy
+```{r}
+# filter out small market caps
+nasdaq_filter = nasdaq[nasdaq$N_cap>300*1e6,]
+
+# visualize defined patterns
+i = 1308
+
+# ticker
+t = nasdaq_filter$Symbol[i]
+
+# load data
+t_df = read_nasdaq(paste0(path_database,t))
+
+# plot
+plot_stock(ticker_symbol = t
+          ,ticker_info   = nasdaq_filter$info[nasdaq_filter$Symbol==t]
+          ,data          = t_df
+          ,emas          = c(50,200)
+          )
+
+# compute techinicals
+ema50       = ema(t_df$close, 50)
+ema200      = ema(t_df$close, 200)
+macd12_26_9 = macd(t_df$close, 12, 26, 9)
+
+# long Entries
+macd_cross  = crossover(macd12_26_9$signal,macd12_26_9$MACD)
+#long_entry  = which(macd_cross & macd12_26_9$MACD < 0 & t_df$close > ema200)
+long_entry  = which(macd_cross & macd12_26_9$MACD < 0 & ema50 > ema200)
+
+macd_cross  = crossover(macd12_26_9$MACD,macd12_26_9$signal)
+short_entry = which(macd_cross & macd12_26_9$MACD >= 0 & t_df$close <= ema200)
+
+# evaluate return
+long_trade_hist = strategy_1(data=t_df,entries=long_entry,R=10,long=TRUE)
+```
+
+
+
+# Apply Simple Condition and Visualize
+```{r}
+#
+#
+#
+
+# BUY THE DIP DURING UPTREND
+# PRICE ACTION BEFORE LARGE INCREASE/UPTREND
+#
+#
+#
+```
+

@@ -1,0 +1,51 @@
+
+
+-------------------------------------------------------------------------------------------------------
+  Nasdaq Ticker List of Symbols
+    
+    https://www.interactivebrokers.com/en/index.php?f=2222&exch=arca&showcategories=
+-------------------------------------------------------------------------------------------------------
+
+# Get All NYSEARCA Symbols
+```{r}
+df = data.frame(Symbol=rep(NA,3000), "Security.Name"=rep(NA,3000))
+
+count = 1
+
+for (i in 1:25) {
+  
+  # download info
+  url     = paste0("https://www.interactivebrokers.com/en/index.php?f=2222&exch=arca&showcategories=&p=&cc=&limit=100&page=",i)  
+  webpage = readLines(url)
+  
+  # locate table in webpage
+  start   = grep("IB Symbol",webpage)
+  end     = grep("<!-- FOOTER START",webpage)
+  webpage = webpage[start:end]
+
+  # get tickers
+  ind     = grep('class="linkexternal">', webpage)
+  tickers = gsub("</td>","",gsub("<td>","",gsub("\\s","",webpage[ind+1])))
+  df$Symbol[count:(count+length(tickers)-1)] = tickers
+  
+  # get company names
+  i1 = as.vector(regexpr("class=\"linkexternal\">",webpage[ind]))
+  i2 = as.vector(regexpr("</a></td>",webpage[ind]))
+  
+  df[count:(count+length(tickers)-1),"Security.Name"] = substr(webpage[ind],i1+21,i2-1)
+  
+  # increment
+  count = count + 100
+  
+}
+
+# remove empty rows
+df = df[!is.na(df$Symbol),]
+
+# store info
+f = file("nysearca.txt")
+writeLines(df$Symbol, f)
+close(f)
+
+write.csv(df,"NYSEARCA.csv",row.names=FALSE)
+```

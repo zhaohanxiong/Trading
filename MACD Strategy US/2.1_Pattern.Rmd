@@ -1,0 +1,143 @@
+
+# Initialization
+```{r}
+rm(list=ls())
+
+# ----------------------------------------------------------------------------------------------
+# compute EMA
+ema = function(price,n) {
+  
+  # initialize price with SMA
+  price[n] = mean(price[1:n])
+  
+  # loop through all time steps, and compute step-wise ema
+  for (i in (n+1):length(price)) {
+    price[i] = price[i]*2/(n + 1) + price[i-1]*(1-2/(n + 1))
+  }
+  
+  # set initial prices to NaN since you cannot compute it
+  price[1:(n-1)] = NA
+  
+  return(price)
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# compute macd
+macd = function(price,ma1,ma2,ma_smooth) {
+  
+  # compute macd line
+  MACD   = ema(price, ma1) - ema(price, ma2)
+  
+  # compute signal line
+  signal = c(rep(NA, ma2), ema(MACD[(ma2+1):length(price)], ma_smooth))
+  
+  return(list(MACD=MACD, signal=signal))
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# compute location of cross over
+crossover = function(x1,x2) {
+  
+  # find max time steps
+  l = max(c(length(x1),length(x2)))
+  
+  # duplicate values if only singular numeric value is provided
+  if (length(x1) == 1) x1 = rep(x1,l)
+  if (length(x2) == 1) x2 = rep(x2,l)
+  
+  # find which indices are true, if NA then set as false
+  cross_ind = c(FALSE,x1[1:(l-1)] >= x2[1:(l-1)] & x1[2:l] <= x2[2:l])
+  cross_ind[is.na(cross_ind)] = FALSE
+  
+  return(cross_ind)
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# plot selected region
+plot_trade = function(data,ema,macd,entry,exit,price_entry,price_exit,save=FALSE,savename="") {
+  
+  if (save) png(paste0(savename,".png"), width = 750, height = 750)
+  
+  # compute time range
+  n1 = entry - 30
+  n2 = exit + 30
+  
+  # set up plot area
+  layout(matrix(1:2,2,1),heights=c(2,1))
+  
+  
+  
+  # # # Main Plot
+  # set up plot range
+  xrange = range(1:(n2-n1+1))
+  yrange = range(c(ema[n1:n2],data$high[n1:n2],data$low[n1:n2]),na.rm=TRUE)
+  
+  # initialize plot with margin sizes
+  par(mar=c(0,4,1,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange,xlab="",ylab="",xaxt="n",yaxt="n")
+  
+  # add grids
+  abline(h=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=0.001),3),lty=2,col=alpha("grey50",0.1))
+  abline(v=seq(xrange[1],xrange[2],by=15),lty=2,col=alpha("grey50",0.1))
+
+  # add ticker symbol
+  text(sum(xrange)/2,sum(yrange)/2,labels=ticker,cex=3,col=alpha("black",0.1))
+  
+  # label axis
+  axis(2,at=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=0.001),3),
+       labels=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=0.001),3),las=2)
+  
+  # moving average
+  lines(1:(n2-n1+1),ema[n1:n2],col="blue",lwd=2)
+  
+  # construct candlesticks
+  colors = ifelse(data$close[n1:n2]>=data$open[n1:n2],"forestgreen","tomato")
+  segments(x0  = 1:(n2-n1+1), y0 = data$low[n1:n2]
+          ,x1  = 1:(n2-n1+1), y1 = data$high[n1:n2]
+          ,col = colors, lwd=1
+  )
+  rect(xleft   = 1:(n2-n1+1)-0.3
+      ,ybottom = ifelse(data$close[n1:n2]>=data$open[n1:n2],data$open[n1:n2],data$close[n1:n2])
+      ,xright  = 1:(n2-n1+1)+0.3
+      ,ytop    = ifelse(data$close[n1:n2]>=data$open[n1:n2],data$close[n1:n2],data$open[n1:n2])
+      ,col     = colors,border=colors
+  )
+  
+  # plot signals
+  axis(2,at=c(price_entry,price_exit),labels=round(c(price_entry,price_exit),4),las=2,lwd=1,col.axis="deeppink")
+  abline(v=c(entry-n1+1,exit-n1+1),col=alpha("deeppink",0.5))
+  
+  
+  
+  # # # Oscillator Plot
+  # set up plot range
+  yrange2 = range(macd$MACD[n1:n2],na.rm=TRUE)
+  
+  # initialize plot with margin sizes
+  par(mar=c(4,4,0,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange2,xlab="",ylab="",xaxt="n",yaxt="n")
+  
+  # add grid
+  abline(v=seq(xrange[1],xrange[2],by=15),lty=2,col=alpha("grey50",0.1))
+  
+  # label axis
+  axis(2,at=0,labels=0,las=2)
+  axis(1,at=seq(xrange[1],xrange[2],by=15),
+       labels=substring(unlist(strsplit(as.character(data$datetime[seq(n1+xrange[1]-1,n1+xrange[2]-1,by=15)])," "))[c(FALSE,TRUE)],1,5),las=2)
+  
+  # oscillator
+  abline(h=0,lty=3,col="grey",lwd=2)
+  text(sum(xrange)/2,yrange2[2]*0.9,labels=deparse(substitute(macd)),cex=1,col=alpha("black",0.5))
+  lines(1:(n2-n1+1),macd$MACD[n1:n2],col="deepskyblue",lwd=2)
+  lines(1:(n2-n1+1),macd$signal[n1:n2],col="orange",lwd=2)
+  
+  # plot signals
+  abline(v=c(entry-n1+1,exit-n1+1),col=alpha("deeppink",0.5))
+  
+  if (save) dev.off()
+
+}
+```

@@ -1,0 +1,111 @@
+
+# Find Next Trade
+```{r}
+rm(list=ls())
+source("Utils.R")
+
+exchange = "nasdaq" # nasdaq nyse
+
+# load stocks database
+stocks = read.csv(paste0(toupper(exchange),".csv"))
+stocks$diffMACD    = NA
+stocks$price.entry = NA
+stocks$per.stop    = NA
+
+# get list of tickers
+for (i in 1:length(stocks$Symbol)) {
+  
+    print(stocks$Symbol[i])
+
+    # load stock
+    path = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(exchange," stocks"))
+    df   = read.csv(paste0(path,"/",stocks$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+    if (nrow(df) < 200) next
+    
+    # macd technicals & compute how close macd is to crossover
+    macd12_26_9 = macd(df$close, 12, 26, 9)
+  
+    macd_n = tail(macd12_26_9$MACD,1)
+    sig_n  = tail(macd12_26_9$signal,1)
+    if (macd_n > sig_n | sig_n  >= 0 | macd_n >= 0) next
+    diffnorm = abs((macd_n - sig_n)/macd_n)
+    
+    # emas techinicals
+    ema12       = ema(df$close, 12)
+    ema26       = ema(df$close, 26)
+    ema200      = ema(df$close, 200)
+
+    # analyze price action at latest price
+    m = nrow(df)
+
+    # derive the exact price of crossover, and thus, entry price
+    price_entry = 351/28*(28/351* df$close[m-1] + 11/13*(ema12[m-2] - ema12[m-1]) + 25/27*(ema26[m-1] - ema26[m-2]))
+    
+    # get local region of current price/date
+    price     = df$close[max(c((m - 100),1)):m]
+    price_low = df$low[max(c((m - 100),1)):m]
+    date      = df$date[max(c((m - 100),1)):m]
+    
+    # compute prior swing low
+    price_smooth = smooth(c(price, price[length(price)]*seq(1.01,by=0.01,length=50)),0.1)[1:length(price)]
+    minimas      = local_extrema(price_smooth,max=FALSE)
+    min_ind      = minimas[length(minimas)]
+    min_date     = date[min_ind]
+    
+    # find minimum in local region of min_date
+    min_date = date[which.min(price_low[max(c(1,(min_ind - 5))):min(c(length(price_low),(min_ind + 5)))]) + min_ind - 6]
+
+    # set stop price
+    price_stop = df$low[df$date == min_date]
+    if (price_stop > price_entry) price_stop = dat_i$low[m]
+    stop_per   = (price_stop - price_entry)/price_entry*100
+    
+    # skip if price has already moved by over 2.5% in favor of the trade before the entry ()
+    crit2 = (df$close[m] - df$close[m-3])/df$close[m]*100 > 2.5
+    if (ifelse(is.na(crit2),FALSE,crit2)) next
+    
+    # save values
+    stocks$diffMACD[i]    = diffnorm
+    stocks$price.entry[i] = price_entry
+    stocks$per.stop[i]    = stop_per
+    
+}
+
+# Filter Stocks
+stocks_enter = stocks
+stocks_enter = stocks_enter[stocks_enter$Cap > 1000,]
+stocks_enter = stocks_enter[!is.na(stocks_enter$diffMACD),]
+stocks_enter = stocks_enter[order(stocks_enter$diffMACD,decreasing=FALSE),]
+rownames(stocks_enter) = NULL
+```
+
+# Plot Stocks
+```{r}
+dir.create(file.path(Sys.getenv("USERPROFILE"),"Desktop","Next Trades"))
+
+for (i in 1:min(c(nrow(stocks_enter),25))) {
+  
+  # load stock
+  path    = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(exchange," stocks"))
+  df      = read.csv(paste0(path,"/",stocks_enter$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+  df$date = as.Date(df$date)
+    
+  # compute macd
+  ema200 = ema(df$close,200)
+  macd12_26_9 = macd(df$close, 12, 26, 9)
+  
+  # crop df
+  ema200             = ema200[(nrow(df) - 66):nrow(df)]
+  macd12_26_9$MACD   = macd12_26_9$MACD[(nrow(df) - 66):nrow(df)]
+  macd12_26_9$signal = macd12_26_9$signal[(nrow(df) - 66):nrow(df)]
+  df                 = df[(nrow(df) - 66):nrow(df),]
+  
+  # save
+  savepath = file.path(Sys.getenv("USERPROFILE"),"Desktop","Next Trades")
+  plot_stock(df,sub="macd",
+             emas=list(ema200),macd=macd12_26_9,
+             save=TRUE,savename=paste0(savepath,"/",i,"_",stocks_enter$Symbol[i]))
+
+}
+```
+

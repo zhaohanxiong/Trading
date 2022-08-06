@@ -1,0 +1,159 @@
+
+# -------------------------------------------------------------------------------------------------------------
+# Notes:
+# - Update NYSE and NASDAQ database once every month (MACD uses 26ema so min 26 days per update)
+# - Update market caps every month
+# -------------------------------------------------------------------------------------------------------------
+
+# Download Updated Daily Data
+```{r}
+setwd("C:/Users/zxio506/OneDrive/Assets/Securities/Trading Stocks")
+
+library(tidyquant)
+rm(list=ls())
+
+# create folder to save stocks
+dir.create(file.path(Sys.getenv("USERPROFILE"),"Desktop","NYSE stocks"))
+dir.create(file.path(Sys.getenv("USERPROFILE"),"Desktop","NASDAQ stocks"))
+
+# set up stocks list for both nyse and nasdaq
+nyse_stocks   = read.csv("NYSE.csv")
+nasdaq_stocks = read.csv("NASDAQ.csv")
+
+stocks = rbind(nyse_stocks[c("Symbol","Cap","Float")],nasdaq_stocks[c("Symbol","Cap","Float")])
+stocks$exchange = c(rep("NYSE",nrow(nyse_stocks)),rep("NASDAQ",nrow(nasdaq_stocks)))
+stocks$exists   = NA
+
+# loop through all data and save
+for (i in 1:nrow(stocks)) {
+  
+  # show progress
+  print(paste0(i," - ",stocks$Symbol[i]))
+  
+  # quant mod command to access yahoo finance
+  df = tryCatch({
+                  getSymbols(stocks$Symbol[i],from="1990-01-01",to=Sys.Date(),warnings=FALSE,auto.assign=FALSE)
+                }, 
+                error = function(cond) {
+                  return(NA)
+                })
+  
+   # whether or not stock was correctly downloaded, write if downloaded, skip if not
+  if (is.na(df)) { # skip to next stock if current doesnt exist
+    stocks$exists[i] = FALSE
+    next
+  } else { # record stock was correctly downloaded
+    stocks$exists[i] = TRUE
+  }
+  
+  # process data downloaded into right form
+  df           = data.frame(df)
+  df$Date      = rownames(df)
+  rownames(df) = NULL
+  colnames(df) = c("Open","High","Low","Close","Volume","Close.Adj","Date")
+  df           = df[,c("Date","Open","High","Low","Close","Volume")]
+  
+  # save path
+  savepath = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks"),stocks$Symbol[i])
+  savepath = paste0(savepath,".csv")
+  
+  # save stock to file
+  write.csv(df,savepath,row.names=FALSE)
+  
+}
+```
+
+# Update Market Caps
+```{r}
+rm(list=ls())
+
+# set exchanges
+exchange = c("NASDAQ.csv","NYSE.csv")
+
+for (e in exchange) {
+  
+  # Load data
+  stock = read.csv(e,sep=",",header=TRUE,stringsAsFactors=FALSE) 
+  stock = stock[stock$Data == "Y",]
+  
+  # define new columns
+  stock$Cap   = NA
+  stock$Float = NA
+  
+  # append new data to data frame
+  for (i in 1:nrow(stock)) {
+    
+    print(paste0(gsub(".csv","",e)," - ",i))
+    
+    # read webpage
+    webpage = tryCatch({readLines(paste0("https://finviz.com/quote.ashx?t=",stock$Symbol[i]))},
+                        error   = function(cond) {return(NA)}
+                       )
+    
+    if (!is.na(webpage[1])) {
+  
+      # market cap data
+      line  = webpage[grepl("Market Cap",webpage)]
+      start = gregexpr("<b>",line)[[1]][1]
+      end   = gregexpr("</b>",line)[[1]][1]
+      
+      stock$Cap[i] = substring(line,start+3,end-1)
+      
+      # float data in millions
+      line  = webpage[grepl("Shs Float",webpage)]
+      start = gregexpr("<b>",line)[[1]][1]
+      end   = gregexpr("</b>",line)[[1]][1]
+      
+      stock$Float[i] = substring(line,start+3,end-1)
+      
+    }
+  
+  }
+  
+  stock[is.na(stock)] = "-"
+  
+  # change cap and float to millions
+  stock$Cap   = as.numeric(substr(stock$Cap,  1,nchar(stock$Cap)  -1)) * ifelse(grepl("M",stock$Cap),  1,1000)
+  stock$Float = as.numeric(substr(stock$Float,1,nchar(stock$Float)-1)) * ifelse(grepl("M",stock$Float),1,1000)
+  
+  # Save updated info
+  write.csv(stock,e,row.names=FALSE)
+  
+}
+```
+
+# Validate Stock Downloads Visually
+```{r}
+# create folder to save stocks
+dir.create(file.path(Sys.getenv("USERPROFILE"),"Desktop","US Stock Plots"))
+
+# plot and save all stocks
+for (i in 1:nrow(stocks)) {
+  
+  # path to load stocks
+  loadpath = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks"),stocks$Symbol[i])
+  loadpath = paste0(loadpath,".csv")
+  
+  # check if stock data exists
+  if (sum(paste0(stocks$Symbol[i],".csv") == 
+          list.files(file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks")))) == 0) next
+  
+  # load stock
+  df = read.csv(loadpath,sep=",")
+  df$Date  = as.Date(df$Date)
+  df$Close = as.numeric(df$Close)
+  
+  # set up save path
+  savepath = file.path(Sys.getenv("USERPROFILE"),"Desktop","US Stock Plots",stocks$Symbol[i])
+  
+  # set up plot window
+  png(paste0(savepath,".png"), width = 1000, height = 500)
+  
+  # plot price
+  plot(df$Date,df$Close,type="l")
+  
+  # close plotting
+  dev.off()
+  
+}
+```

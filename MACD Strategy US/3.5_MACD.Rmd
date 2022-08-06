@@ -1,0 +1,204 @@
+
+# Initialization
+```{r}
+rm(list=ls())
+source("Utils.R")
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# MACD Strategy
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+macd_strategy = function(dat_i) {
+  
+  # empty data.frame to return in case of errors
+  empty_out = data.frame(entry.date=NA,exit.date=NA,outcome=NA)
+  
+  # return if data is less than 200 in length and cant compute 200ema
+  if (nrow(dat_i) <= 200) return(empty_out)
+  
+  # techinicals
+  ema200      = ema(dat_i$close, 200)
+  macd12_26_9 = macd(dat_i$close, 12, 26, 9)
+  
+  # entry
+  macd_cross  = crossover(macd12_26_9$signal,macd12_26_9$MACD)
+  
+  # entry signals
+  macd_entry = which(macd_cross & macd12_26_9$MACD < 0 & dat_i$close > ema200)
+  
+  # loop through macd entries, how to find prior swing low, use that as stop loss, and take profit is 1.5x greater
+  out_date_entry = as.Date(c())
+  out_date_exit  = as.Date(c())
+  out_return     = as.numeric(c())
+  
+  for (m in macd_entry) {
+    
+    # get local region of current price/date
+    price     = dat_i$close[max(c((m - 100),1)):m]
+    price_low = dat_i$low[max(c((m - 100),1)):m]
+    date      = dat_i$date[max(c((m - 100),1)):m]
+    
+    # compute prior swing low
+    price_smooth = smooth(c(price, price[length(price)]*seq(1.01,by=0.01,length=50)),0.1)[1:length(price)]
+    minimas      = local_extrema(price_smooth,max=FALSE)
+    min_ind      = minimas[length(minimas)]
+    min_date     = date[min_ind]
+    
+    # find minimum in local region of min_date
+    min_date = date[which.min(price_low[max(c(1,(min_ind - 5))):min(c(length(price_low),(min_ind + 5)))]) + min_ind - 6]
+    
+    # set prices
+    price_entry = dat_i$close[m]
+    price_stop  = dat_i$low[dat_i$date == min_date]*0.995 # put stop loss %0.5 below prior swing low
+    price_profit= dat_i$close[m] * (1 + (price_entry - price_stop)/price_entry * 1.5) # 1R : 1.5R
+    
+    # find which price is hit first
+    ind_stop = which(dat_i$low[m:nrow(dat_i)] <= price_stop)[1] + m - 1
+    ind_exit = which(dat_i$high[m:nrow(dat_i)] >= price_profit)[1] + m - 1
+    
+    outcome   = which.min(c(ind_stop,ind_exit))
+    exit_date = min(c(ind_stop,ind_exit),na.rm=TRUE)
+    
+     # store the trade if there is an exit, and if the exit date is not in the future
+    if (is.finite(exit_date) & !is.na(dat_i$date[exit_date])) {
+      
+      # set dates
+      date_entry = dat_i$date[m] # enter at next candle
+      date_stop  = min_date
+      date_exit  = dat_i$date[exit_date]
+      
+      # compute profits/loss
+      return = ifelse(outcome==1,-1,1.5)
+  
+      # save data
+      out_date_entry = c(out_date_entry,date_entry)
+      out_date_exit  = c(out_date_exit,date_exit)
+      out_return     = c(out_return, return)
+      
+    }
+    
+  }
+  
+  # output data frame with all trades
+  dat_out = data.frame(entry.date=as.Date(out_date_entry),
+                       exit.date=as.Date(out_date_exit),
+                       outcome=as.numeric(out_return))
+  
+  # if no trades return empty matrix
+  if (nrow(dat_out)==0) {
+    return(empty_out)
+  } else {
+    return(dat_out)
+  }
+  
+}
+```
+
+# Load and Run MACD and EMA strategies
+```{r}
+exchange = "nasdaq"
+
+# set up stocks
+stocks = read.csv(paste0(toupper(exchange),".csv"))
+stocks$macd_return = NA
+stocks$macd_n      = NA
+
+# dataframe containing history of all trades
+trade_hist = data.frame(ticker=character(),entry.date=as.Date(character()),exit.date=as.Date(character()),outcome=numeric())
+
+# read stock data
+for (i in 2:nrow(stocks)) {
+  
+    print(stocks$Symbol[i])
+  
+    # load stock
+    path = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(exchange," stocks"))
+    df   = read.csv(paste0(path,"/",stocks$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+    
+    # run strategies
+    macd_out = macd_strategy(df)
+    
+    # appending trade history
+    trade_hist = rbind(trade_hist, cbind(ticker=stocks$Symbol[i],macd_out))
+    
+    # save winning percentages and number of trades
+    macd_out = macd_out[!is.na(macd_out$entry.date),] # remove NA rows
+    
+    stocks$macd_return[i] = sum(macd_out$outcome>0)/nrow(macd_out)
+    stocks$macd_n[i]      = nrow(macd_out)
+  
+}
+
+# compute longest winning/losing streak, and win rate, summarize outputs
+trade_hist   = trade_hist[!is.na(trade_hist$outcome),]
+win_lose_seq = trade_hist$outcome[order(trade_hist$entry.date)]
+rle          = rle(win_lose_seq)
+
+sprintf("Win Streak: %i",   max(rle$lengths[rle$values==1.5],na.rm=TRUE))
+sprintf("Lose Streak: %i",  max(rle$lengths[rle$values==-1],na.rm=TRUE))
+sprintf("Win Rate: %.1f%%", sum(trade_hist$outcome>0)/nrow(trade_hist)*100)
+
+# plot profit graphs
+macd_trade = cumprod(1+win_lose_seq/100)
+plot(as.Date(sort(trade_hist$entry.date)),macd_trade,type="l",log="y")
+abline(h=10^(-2:100),col=alpha("grey",0.5))
+
+# write to output
+write.csv(stocks,paste0(exchange,"_macd_returns.csv"),row.names=FALSE)
+write.csv(trade_hist,paste0(exchange,"_macd_history.csv"),row.names=FALSE)
+```
+
+# Further Filtering Based on Results
+```{r}
+exchange = "nasdaq"
+
+# load returns
+stocks = read.csv(paste0(exchange,"_macd_returns.csv"),sep=",")
+hist   = read.csv(paste0(exchange,"_macd_history.csv"),sep=",")
+
+# add columns
+stocks$gradient = NA
+stocks$residual = NA
+
+# compute additional metrics
+for (i in 1:nrow(stocks)) {
+
+  print(stocks$Symbol[i])
+  
+  # load data
+  path = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(exchange," stocks"))
+  df   = read.csv(paste0(path,"/",stocks$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+  
+  # compute linear regression
+  LR = lm(1:nrow(df) ~ df$close)
+  stocks$gradient[i] = LR$coefficients[2]
+  stocks$residual[i] = mean(LR$residuals^2)
+  
+}
+
+# filter by market cap
+returns = stocks[!is.na(stocks$Cap) & stocks$macd_n != 0,]
+returns = returns[returns$Cap>10000,] # only take large caps
+#returns = returns[returns$gradient>0,]
+#returns = returns[returns$residual<750000,]
+
+# compute summaries
+s1 = sum(returns$macd_n)/25
+s2 = sum(returns$macd_return * returns$macd_n / sum(returns$macd_n)) * 100
+
+sprintf("Average Number of Trades Per Year: %0.f, with Winning Percentage: %0.1f%%",s1,s2)
+```
+
+- only take MACD entries that are much below 0 line
+- stop loss slightly below pullback of trend
+- dont take trades when the price has already taken a big move in your favour
+- avoid trades with large stop losses
+- dont take trades when price is in a range, when 200 ema is flat, and price action crosses above and below ema
+- always prioritize ideal setup over quantity of trades
+
+
+
+- 200 ema really worth it?
+- apply strong levels of support and 200 ema as stop loss
+- use prior pullbacks as support, and avoid buying near long-term resistance
+
+- trailing stop loss

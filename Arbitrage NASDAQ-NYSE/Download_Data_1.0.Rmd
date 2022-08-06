@@ -1,0 +1,68 @@
+
+# Download All Required Tickers From Yahoo Finance
+
+- only run this code during NZX opening hours, at 4pm
+- yahooQF() function argument to getSymbols to get more about company
+
+```{r}
+rm(list=ls())
+library(quantmod)
+
+# load ticker list for etf and index pairs
+exchange_data = read.csv("NZX.csv",header=TRUE)
+
+# filter out inactive stocks
+exchange_data = exchange_data[exchange_data$Volume != "0",]
+
+# filter repeat stocks
+remove_rows = c()
+for (i in 2:nrow(exchange_data)) {
+  if (exchange_data$Company[i] == exchange_data$Company[i-1]) {
+    remove_rows = c(remove_rows,i)
+  }
+}
+exchange_data = exchange_data[-remove_rows,]
+
+# produce array of all tickers using yahoo finance format
+exchange_data$valid = NA
+stocks = paste0(exchange_data$Code,".NZ")
+
+# loop through all data and save
+for (i in 1:length(stocks)) {
+  
+  print(paste0(i," - ",stocks[i]))
+  
+  # quant mod command to access yahoo finance
+  df = tryCatch({
+                  getSymbols(stocks[i],from="2010-01-01",to=Sys.Date(),warnings=FALSE,auto.assign=FALSE)
+                },
+                error = function(cond) {
+                  return(NA)
+                })
+  
+   # whether or not stock was correctly downloaded, write if downloaded, skip if not
+  if (is.na(df)) next # skip to next stock if current doesnt exist
+  if (nrow(df) <= 1) next # if there is only one row of data
+
+  # process data downloaded into right form
+  df           = data.frame(df)
+  df$Date      = rownames(df)
+  rownames(df) = NULL
+  colnames(df) = c("open","high","low","close","volume","close.Adj","date")
+  df           = df[,c("date","open","high","low","close")]
+  
+  # filter out NA rows
+  df = df[!is.na(df$date),]
+  df = df[!is.na(df$open),]
+  df = df[!is.na(df$high),]
+  df = df[!is.na(df$low),]
+  df = df[!is.na(df$close),]
+
+  # save stock to file with simple ticker name
+  ticker = gsub("=X",".",stocks[i])
+  period_loc = regexpr("\\.",ticker)[1]
+  ticker = substr(ticker,1,ifelse(period_loc==-1,nchar(ticker),period_loc-1))
+  write.csv(df,paste0("data/",ticker,".csv"),row.names=FALSE)
+  
+}
+```

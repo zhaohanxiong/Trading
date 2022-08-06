@@ -1,0 +1,361 @@
+
+# --------------------------------------------------------------------------------------
+# IBKR Fees
+# --------------------------------------------------------------------------------------
+# Stocks: 
+#     - 0.005 USD/share                 (Shares above or equal to 0.5 USD)
+#     - 1% of trade value               (Shares below 0.5 USD)
+#     - Minimum of 1 USD for any trade  (When trading than 200 shares of any stock)
+# # 
+# Currency:
+#     - 0.002% of trade value           (When trading above or equals to 100,000 USD)
+#     - Minimum of 2 USD for any trade  (When trading less than 100,000 USD)
+# # 
+# --------------------------------------------------------------------------------------
+
+# Initialization
+```{r}
+rm(list=ls())
+source("Utils.R")
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# MACD Strategy
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+macd_strategy = function(dat_i) {
+
+  # ------------------------------------------------------------------------------------------------
+  # Parameters To Tune:
+  # - 
+  # - 
+  # - 
+  # ------------------------------------------------------------------------------------------------
+  
+  # empty data.frame to return in case of errors
+  empty_out = data.frame(entry.date=as.Date(NA),exit.date=as.Date(NA),R=NA,entry.price=NA,exit.price=NA,stop.percent=NA)
+  
+  # return if data is less than 35 in length and cant compute macd
+  if (nrow(dat_i) <= 35) return(empty_out)
+
+  # techinicals
+  ema12       = ema(dat_i$Close, 12)
+  ema26       = ema(dat_i$Close, 26)
+  #ema200      = ema(dat_i$Close, 200)
+  macd12_26_9 = macd(dat_i$High, 12, 26, 9)
+
+  # entry
+  macd_cross = crossover(macd12_26_9$signal,macd12_26_9$MACD)
+  macd_entry = which(macd_cross & macd12_26_9$MACD < 0)
+  #macd_entry = which(macd_cross & macd12_26_9$MACD < 0 & dat_i$Low > ema200)
+  
+  # loop through macd entries, how to find prior swing low, use that as stop loss, and take profit is 1.5x greater
+  out_date_entry   = as.Date(c())
+  out_date_exit    = as.Date(c())
+  out_return       = as.numeric(c())
+  out_price_entry  = as.numeric(c())
+  out_price_exit   = as.numeric(c())
+  out_stop_percent = as.numeric(c())
+  
+  for (m in macd_entry) {
+    
+    # get local region of current price/date
+    price = dat_i$Close[max(c((m - 100),1)):m]
+    date  = dat_i$Date[max(c((m - 100),1)):m]
+    
+    # compute prior swing low
+    price_smooth = smooth(c(price, price[length(price)]*seq(1.01,by=0.01,length=50)),0.1)[1:length(price)]
+    minimas      = local_extrema(price_smooth,max=FALSE)
+    min_ind      = minimas[length(minimas)]
+    
+    # find minimum in local region of min_date
+    min_date = date[which.min(price[max(c(1,(min_ind - 5))):min(c(length(price),(min_ind + 5)))]) + min_ind - 6]
+    
+    # derive the exact price of crossover, and thus, entry price
+    price_entry = 351/28*(macd12_26_9$MACD[m-1]   - 11/13*ema12[m-1] + 25/27*ema26[m-1])  # wrong cross (better)
+    #price_entry = 351/28*(macd12_26_9$signal[m-1] - 11/13*ema12[m-1] + 25/27*ema26[m-1])  # correct cross (50%)
+    #price_entry = dat_i$Close[m] # enter at close (35%)
+    
+    # if price entry is not hit in the next day intraday, then skip trade
+    if (!(price_entry >= dat_i$Low[m] & price_entry <= dat_i$High[m])) next
+    
+    # set stop price and stop loss percentage
+    price_stop = dat_i$Close[dat_i$Date == min_date][1] # Use Low or Close
+    stop_per   = (price_stop - price_entry)/price_entry*100
+  
+    # trailing stop loss
+    max_vals   = cummax(dat_i$High[m:(nrow(dat_i)-1)])
+    draw_downs = c(9999999,(dat_i$Low[(m+1):nrow(dat_i)] - max_vals)/max_vals*100)
+    ind_matchs = which(draw_downs <= stop_per)
+    exit_date  = min(ind_matchs + m - 1)
+  
+    # if there is no valid exit date, then skip trade
+    if (!(is.finite(exit_date) & !is.na(dat_i$Date[exit_date]))) next
+    
+    # compute exit price
+    price_exit = max(dat_i$High[m:(exit_date-1)])*(100+stop_per)/100
+    if (price_exit > dat_i$Open[exit_date]) price_exit = dat_i$Open[exit_date]
+    
+    # compute return
+    profit_per = (price_exit - price_entry)/price_entry*100
+    return     = profit_per/abs(stop_per)
+
+    # set dates
+    date_entry = dat_i$Date[m]
+    date_exit  = dat_i$Date[exit_date]
+    
+    # save data
+    out_date_entry   = c(out_date_entry,   date_entry)
+    out_date_exit    = c(out_date_exit,    date_exit)
+    out_price_entry  = c(out_price_entry,  price_entry)
+    out_price_exit   = c(out_price_exit,   price_exit)
+    out_stop_percent = c(out_stop_percent, stop_per)
+    out_return       = c(out_return,       return)
+    
+  }
+  
+  # output data frame with all trades
+  dat_out = data.frame(entry.date   = as.Date(out_date_entry),
+                       exit.date    = as.Date(out_date_exit),
+                       entry.price  = as.numeric(out_price_entry),
+                       exit.price   = as.numeric(out_price_exit),
+                       stop.percent = as.numeric(out_stop_percent),
+                       R            = as.numeric(out_return))
+  
+  # if no trades return empty matrix
+  if (nrow(dat_out)==0) {
+    return(empty_out)
+  } else {
+    return(dat_out)
+  }
+  
+}
+```
+
+# RUN STRAT # Load and Run MACD strategy on all US stocks
+```{r}
+# set up stocks
+nyse_stocks   = read.csv("NYSE.csv")
+nasdaq_stocks = read.csv("NASDAQ.csv")
+exchange      = c(rep("NYSE",nrow(nyse_stocks)),rep("NASDAQ",nrow(nasdaq_stocks)))
+
+stocks = rbind(nyse_stocks[c("Symbol","Cap","Float")],nasdaq_stocks[c("Symbol","Cap","Float")])
+stocks$exchange = exchange
+
+# dataframe containing history of all trades
+trade_hist = data.frame(ticker=character(),exchange=character(),
+                        entry.date=as.Date(character()),exit.date=as.Date(character()),R=as.numeric(),
+                        entry.price=as.numeric(),exit.price=as.numeric(),stop.percent=as.numeric())
+
+# read stock data
+#for (i in 1:nrow(stocks)) {
+for (i in seq(from=1,to=nrow(stocks),by=10)) {
+  
+    print(stocks$Symbol[i])
+  
+    # check if stock data exists
+    if (sum(paste0(stocks$Symbol[i],".csv") == 
+        list.files(file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(stocks$exchange[i]," stocks")))) == 0) next
+  
+    # load stock
+    path = file.path(Sys.getenv("USERPROFILE"),"Desktop",paste0(exchange[i]," stocks"))
+    df   = read.csv(paste0(path,"/",stocks$Symbol[i],".csv"),sep=",",header=TRUE,stringsAsFactors=FALSE)
+    
+    # run strategies
+    macd_out = macd_strategy(df)
+    
+    # appending trade history
+    trade_hist = rbind(trade_hist, cbind(ticker=stocks$Symbol[i],exchange=exchange[i],macd_out))
+    
+}
+
+# remove missing rows and sort by time
+trade_hist = trade_hist[!is.na(trade_hist$R),]
+trade_hist = trade_hist[order(trade_hist$entry.date),]
+
+# save trade history
+write.csv(trade_hist,file="trade_hist.csv",row.names=FALSE)
+```
+
+# SUMMARY # Compute Basic Summary (with some filters)
+```{r}
+# # # # # # # # # # # filters data
+#temp = read.csv("trade_hist.csv",sep=",",stringsAsFactors=FALSE)
+temp = trade_hist
+
+# filter by stop percentages
+temp = temp[temp$stop.percent <= -1,]
+temp = temp[temp$stop.percent >= -5,]
+
+# filter by market cap
+temp = temp[temp$ticker %in% stocks$Symbol[stocks$Cap>=1000],]
+temp = temp[temp$ticker %in% stocks$Symbol[!is.na(stocks$Cap)],]
+
+# print summaries
+winrate    = sum(temp$R>0)/nrow(temp)
+winreturn  = mean(temp$R[temp$R > 0])
+losereturn = mean(temp$R[temp$R <= 0])
+
+p      = list()
+p[[1]] = sprintf("")
+p[[2]] = sprintf("Win Rate:                 %.1f%%", winrate*100)
+p[[3]] = sprintf("Risk Reward Ratio:        %.1f", winreturn/abs(losereturn))
+p[[4]] = sprintf("Expectation:              %.1f%%", winrate*winreturn + (1 - winrate)*losereturn)
+p[[5]] = sprintf("Possible Trades per Year: %.0f", nrow(temp)/28)
+cat(paste0(unlist(p),collapse="\n"))
+```
+
+# SIMULATION # Simulate Having Multiple Trades Occuring at the Same Time
+```{r}
+# initialize counters
+trade_real    = temp[1,]
+porfolio_used = 100/abs(trade_real$stop.percent[1])
+exited        = c(0)
+position      = c(porfolio_used)
+
+# loop through all data
+for (i in 2:nrow(temp)) {
+  
+  # check if "counter"'th to i'th trade has exited, if so, portfolio is freed up
+  for (j in which(exited==0)) {
+    
+    if (temp$entry.date[i] > trade_real$exit.date[j]) {
+      
+      # substract amount of portfolio used
+      porfolio_used = porfolio_used - 100/abs(trade_real$stop.percent[j])
+      exited[j]     = 1
+      
+    }
+      
+  }
+  
+  # if there is still unused cash, then enter trade
+  portfolio_portion = 100/abs(temp$stop.percent[i])
+  
+  if ((porfolio_used + portfolio_portion) <= 100) {
+    
+    # add the position to portfolio
+    porfolio_used = porfolio_used + portfolio_portion
+    trade_real    = rbind(trade_real,temp[i,])
+    exited        = c(exited,0)
+    
+    # save history of how much portfolio is used
+    position = c(position,porfolio_used)
+    
+  }
+  
+}
+
+trade_real$porfolio_used = position
+row.names(trade_real)    = NULL
+
+# calculate length of trade
+trade_real$trade_len  = trade_real$exit.date - trade_real$entry.date
+
+# generate summarize statistics
+rle          = rle(trade_real$R>0)
+trade_period = as.numeric(trade_real$exit.date[nrow(trade_real)] - trade_real$entry.date[1])
+cumreturn    = tail(cumprod(c(1,1+trade_real$R/100))-1,1)
+n_trades_yr  = nrow(trade_real)/(trade_period/365.25)
+
+p1 = list()
+p1[[1]] = sprintf("----------------------- nyse + nasdaq")
+p1[[2]] = sprintf("Win Rate:     %.1f%%", sum(trade_real$R>0)/nrow(trade_real)*100)
+p1[[3]] = sprintf("Average Win:  %0.1f%% (%.0f Days)",
+                  mean(trade_real$R[trade_real$R>0]),mean(trade_real$trade_len[trade_real$R>0]))
+p1[[4]] = sprintf("Average Loss: %0.1f%% (%.0f Days)",
+                  mean(trade_real$R[trade_real$R<=0]),mean(trade_real$trade_len[trade_real$R<=0]))
+p1[[5]] = sprintf("Win vs Lose Streak: %i vs %i", 
+                  max(rle$lengths[rle$values],na.rm=TRUE),max(rle$lengths[!rle$values],na.rm=TRUE))
+p1[[6]] = sprintf("Cumulative Returns: %0.1f%% (%.1f Yrs, %.1f Trades/Yr)",
+                  cumreturn*100,trade_period/365.25,n_trades_yr)
+p1[[7]] = sprintf("Annualized Return:  %0.1f%%", (cumreturn^(365.25/trade_period)-1)*100)
+
+# generate portfolio statistics
+macd_trade = cumprod(c(1,1+trade_real$R/100))[-1]
+drawdowns  = sapply(1:length(macd_trade), function(x) (macd_trade[x] - max(macd_trade[1:(x-1)]))/max(macd_trade[1:(x-1)])*100)
+rle        = rle(drawdowns<0)
+
+max_rle = which(rle$length == max(rle$lengths[rle$values==TRUE]))
+start   = sum(rle$lengths[1:(max_rle-1)])
+end     = start+rle$lengths[tail(max_rle,1)]
+
+# projected return over entire history
+par(mfrow=c(2,1))
+plot(as.Date(trade_real$entry.date),macd_trade,type="l",xlab="",ylab="Portfolio",log="y")
+abline(h=10^(0:50),col=alpha("grey",0.33))
+abline(v=as.Date(paste0(1990:2025,"-01-01")),col=alpha("grey",0.5))
+
+osc = sapply(1:length(macd_trade),function(x) ifelse(x <= round(n_trades_yr,0),
+                                                    NA,
+                                                    (macd_trade[x] - macd_trade[x-round(n_trades_yr,0)])/macd_trade[x]))*100
+plot(as.Date(trade_real$entry.date),type="l",osc,col="deeppink",xlab="Date",ylab="Annual Return")
+abline(h=seq(0,100,by=10),col=alpha("grey",0.5))
+abline(v=as.Date(paste0(1990:2025,"-01-01")),col=alpha("grey",0.5))
+
+# display report
+cat(paste0(unlist(p1),collapse="\n"))
+```
+
+# Plot Annual Returns
+```{r}
+comission  = 0.1
+macd_trade = cumprod(c(1,1+(trade_real$R - comission)/100))[-1]
+
+# load sp500 data
+sp500       = read.csv("old code/SPY.csv")
+sp500$Date  = as.Date(sp500$Date,format="%m/%d/%Y")
+sp500$Close = as.numeric(sp500$Close)
+
+# load nasdaq composite index data
+nasdaq       = read.csv("old code/IXIC.csv")
+nasdaq$Date  = as.Date(nasdaq$Date,format="%m/%d/%Y")
+nasdaq$Close = as.numeric(nasdaq$Close)
+
+# initialize vectors
+return_sp500  = c()
+return_nasdaq = c()
+return_macd   = c()
+
+# date range
+date_range = 1993:2021
+
+# loop through each year
+for (d in date_range) {
+  
+  # set date range (inclusive)
+  start_date = as.Date(paste0(d,"-01-01"))
+  end_date   = as.Date(paste0(d,"-12-31"))
+  
+  # filter
+  sp500_1yr  = sp500$Close[sp500$Date >= start_date & sp500$Date <= end_date]
+  nasdaq_1yr = nasdaq$Close[nasdaq$Date >= start_date & nasdaq$Date <= end_date]
+  macd_1yr   = macd_trade[trade_real$entry.date >= start_date & trade_real$exit.date <= end_date]
+  
+  # 1 year return
+  return_sp500_1yr  = (tail(sp500_1yr,1) - sp500_1yr[1])/sp500_1yr[1]*100
+  return_nasdaq_1yr = (tail(nasdaq_1yr,1) - nasdaq_1yr[1])/nasdaq_1yr[1]*100
+  return_macd_1yr   = (tail(macd_1yr,1) - macd_1yr[1])/macd_1yr[1]*100
+  
+  # append data
+  return_sp500  = c(return_sp500,return_sp500_1yr)
+  return_nasdaq = c(return_nasdaq,return_nasdaq_1yr)
+  return_macd   = c(return_macd, ifelse(length(return_macd_1yr) == 0,0,return_macd_1yr))
+  
+}
+
+# plot
+df_plot  = t(data.frame(SP500 = return_sp500,NASDAQ = return_nasdaq, MACD = return_macd))
+colnames(df_plot) = date_range
+
+barplot(df_plot,col = c("deepskyblue","tomato","darkolivegreen2"), beside = TRUE,ylab="Annual Return (%)",xlab="Year")
+abline(h=seq(-50,10000,by=50),col=alpha("grey",0.5))
+legend("topright",c("SP500","NASDAQ","STRATEGY"),col=c("deepskyblue","tomato","darkolivegreen2"),lty=1,lwd=10)
+
+# print report
+p = list()
+p[[1]] = sprintf("")
+p[[2]] = sprintf("------------- Annualized Returns")
+p[[3]] = sprintf("SP500    %0.1f%%",median(return_sp500))
+p[[4]] = sprintf("NASDAQ   %0.1f%%",median(return_nasdaq))
+p[[5]] = sprintf("STRATEGY %0.1f%%",median(return_macd))
+cat(paste0(unlist(p),collapse="\n"))
+```

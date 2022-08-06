@@ -1,0 +1,336 @@
+ 
+# Initialization
+```{r}
+rm(list=ls())
+
+library(scales)
+
+# ----------------------------------------------------------------------------------------------
+# smoothing data using past data and overall data (naive)
+smooth = function(x,s) {
+  index = 1:length(x)
+  temp  = predict(loess(x ~ index,span=s))
+  return(temp)
+}
+
+# ----------------------------------------------------------------------------------------------
+# local minimum
+local_extrema = function(x,max=TRUE) {
+  
+  l   = length(x)
+  out = rep(FALSE,l)
+  
+  if (max) {
+    out[3:(l-2)] = x[1:(l-4)] < x[2:(l-3)] & x[2:(l-3)] < x[3:(l-2)]
+    out[3:(l-2)] = out[3:(l-2)] & x[3:(l-2)] > x[4:(l-1)] & x[4:(l-1)] > x[5:l]
+    
+  } else {
+    out[3:(l-2)] = x[1:(l-4)] > x[2:(l-3)] & x[2:(l-3)] > x[3:(l-2)]
+    out[3:(l-2)] = out[3:(l-2)] & x[3:(l-2)] < x[4:(l-1)] & x[4:(l-1)] < x[5:l]
+  }
+  
+  return(which(out)+1)
+
+}
+
+# ----------------------------------------------------------------------------------------------
+# compute EMA
+ema = function(price,n) {
+  
+  # initialize price with SMA
+  price[n] = mean(price[1:n])
+  
+  # loop through all time steps, and compute step-wise ema
+  for (i in (n+1):length(price)) {
+    price[i] = price[i]*2/(n + 1) + price[i-1]*(1-2/(n + 1))
+  }
+  
+  # set initial prices to NaN since you cannot compute it
+  price[1:(n-1)] = NA
+  
+  return(price)
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# VWAP
+vwap = function(price,volume) {
+  
+  out = cumsum(price*volume)/cumsum(volume)
+
+  return(out)
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# compute macd
+macd = function(price,ma1,ma2,ma_smooth) {
+  
+  # compute macd line
+  MACD   = ema(price, ma1) - ema(price, ma2)
+  
+  # compute signal line
+  signal = c(rep(NA, ma2), ema(MACD[(ma2+1):length(price)], ma_smooth))
+  
+  return(list(MACD=MACD, signal=signal))
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# compute location of cross over
+crossover = function(x1,x2) {
+  
+  # find max time steps
+  l = max(c(length(x1),length(x2)))
+  
+  # duplicate values if only singular numeric value is provided
+  if (length(x1) == 1) x1 = rep(x1,l)
+  if (length(x2) == 1) x2 = rep(x2,l)
+  
+  # find which indices are true, if NA then set as false
+  cross_ind = c(FALSE,x1[1:(l-1)] >= x2[1:(l-1)] & x1[2:l] <= x2[2:l])
+  cross_ind[is.na(cross_ind)] = FALSE
+  
+  return(cross_ind)
+  
+}
+
+# ----------------------------------------------------------------------------------------------
+# read nasdaq stock
+read_nasdaq = function(file_path) {
+  
+  dat        = read.csv(paste0(file_path,".csv"),sep=",")
+  dat$date   = as.Date(dat$date,format="%Y-%m-%d")
+  dat$open   = as.numeric(dat$open)
+  dat$high   = as.numeric(dat$high)
+  dat$low    = as.numeric(dat$low)
+  dat$close  = as.numeric(dat$close)
+  dat$volume = as.numeric(dat$volume)
+  
+  return(dat)
+
+}
+
+# ----------------------------------------------------------------------------------------------
+# plot selected region
+plot_stock = function(ticker_symbol             # ticker symbol (string)
+                     ,ticker_info               # ticker market cap and float (string)
+                     ,data                      # stock data (data frame)
+                     ,emas=list()               # emas (list)
+                     ,supportresistance=c()     # prices at support/resistance (vector)
+                     ,save=FALSE,savename=""    # if to save or not (bool/string)
+                     ) {
+  
+  if (save) png(paste0(savename,".png"), width = 1500, height = 750)
+
+  # set up plot area
+  layout(matrix(1:2,2,1),heights=c(2.5,1))
+  
+  # # # Main Plot
+  # set up plot range
+  xrange = range(data$date)
+  yrange = range(c(data$high,data$low),na.rm=TRUE)
+
+  # initialize plot with margin sizes
+  par(mar=c(1,4,1,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange,xlab="",ylab="Price (USD)",xaxt="n",yaxt="n")
+
+  # add ticker symbol
+  text(diff(xrange)/2+xrange[1],sum(yrange)/2,labels=ticker_symbol,cex=4,col=alpha("black",0.1))
+  
+  # label axis
+  axis(2,at=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=10^(floor(log10(yrange[2]))-1)),-(floor(log10(yrange[2]))-1)),
+       labels=round(seq(yrange[1]*0.9,yrange[2]*1.1,by=10^(floor(log10(yrange[2]))-1)),-(floor(log10(yrange[2]))-1)),las=2)
+  
+  # moving average
+  if (length(emas) > 0) {
+    cols = c("red","orange","aquamarine","blue","purple","black")
+    for (i in 1:length(emas)) {
+      lines(data$date,emas[[i]],col=cols[i],lwd=2)
+    }
+  }
+
+  # support and resistance lines
+  abline(h=supportresistance,col=alpha("turquoise",0.2),lwd=3)
+    
+  # construct candlesticks
+  colors = ifelse(data$close >= data$open,"forestgreen","tomato")
+  segments(x0  = data$date, y0 = data$low
+          ,x1  = data$date, y1 = data$high
+          ,col = colors, lwd=1
+  )
+  rect(xleft   = data$date-0.3
+      ,ybottom = ifelse(data$close >= data$open,data$open,data$close)
+      ,xright  = data$date+0.3
+      ,ytop    = ifelse(data$close >= data$open,data$close,data$open)
+      ,col     = colors,border=colors
+  )
+  
+  # # # Volume Plot
+  # set up plot range
+  yrange2 = c(0,quantile(data$volume/1e6,0.999))
+
+  # initialize plot with margin sizes
+  par(mar=c(6,4,0,1))
+  plot(-999,-999,xlim=xrange,ylim=yrange2,xlab="",ylab="Vol (M)",xaxt="n",las=1)
+  
+  # label axis
+  axis(1,at=seq(xrange[1],xrange[2],by=25),
+     labels=seq(xrange[1],xrange[2],by=25),las=2)
+
+  # add volume
+  rect(xleft   = data$date-0.5
+      ,ybottom = 0
+      ,xright  = data$date+0.5
+      ,ytop    = data$volume/1e6
+      ,col     = colors,border=NA
+  )
+  
+  # add ticker symbol
+  text(xrange[1],yrange2[2]*0.9,labels=ticker_info,cex=1,col="blue",pos=4)
+  
+  if (save) dev.off()
+
+}
+```
+
+
+
+# Load NASDAQ Ticker List and Pre-Process
+```{r}
+# --- set paths -------------------------------------------------------------------- 
+path_database = file.path(Sys.getenv("USERPROFILE"),"Desktop","nasdaq stocks")
+path_image    = file.path(Sys.getenv("USERPROFILE"),"Desktop")
+# ----------------------------------------------------------------------------------
+
+# load NASDAQ database
+nasdaq = read.csv("NASDAQ.csv",sep=",",stringsAsFactors=FALSE)
+
+# define cap ranges
+ranges   = c("-","M","B","T")
+ranges_n = c(NA,1e6,1e9,1e12)
+
+# process market cap values
+cap_val  = as.numeric(sapply(nasdaq$Cap,function(x) substr(x,1,nchar(x)-1)))
+cap_size = unname(sapply(nasdaq$Cap,function(x) substr(x,nchar(x),nchar(x))))
+
+nasdaq$N_cap = unname(sapply(cap_size,function(x) ranges_n[ranges==x]))*cap_val
+
+# process market float values
+float_val  = as.numeric(sapply(nasdaq$Float,function(x) substr(x,1,nchar(x)-1)))
+float_size = unname(sapply(nasdaq$Float,function(x) substr(x,nchar(x),nchar(x))))
+
+nasdaq$N_float = unname(sapply(float_size,function(x) ranges_n[ranges==x]))*float_val
+
+# add string to summarize stock
+nasdaq$info = sprintf("Market Cap %s, Float %s", nasdaq[,c("Cap")], nasdaq[,c("Float")])
+
+# filter stocks
+nasdaq = nasdaq[!is.na(nasdaq$N_cap),
+                c("Symbol","Security.Name","Market.Category","N_cap","N_float","info")]
+rownames(nasdaq) = NULL
+```
+
+
+
+# price action before large rise
+```{r}
+i = 10
+
+# ticker
+t = nasdaq$Symbol[i]
+
+# load data
+t_df = read_nasdaq(file.path(path_database,t))
+
+# compute techinicals
+ema50  = ema(t_df$close, 50)
+ema200 = ema(t_df$close, 200)
+
+# h return
+l          = nrow(t_df)
+return_1mo = c(rep(0,21), (t_df$close[22:l] - t_df$close[1:(l-21)])/t_df$close[1:(l-21)])*100
+
+# find times when the stock went up more than 10% in XX months
+ind = which(return_1mo >= 10)
+
+# filter out indices which are close to eachother
+ind = c(0,ind)
+ind = ind[c(0,diff(ind)) > 5]
+
+# save images of stock price action, keep price action leading up to it
+if (TRUE) {
+  dir.create(file.path(path_image,t))
+  for (ii in ind) {
+    plot_range = max(c(ii-63,1)):min(ii+21,nrow(t_df))
+    plot_stock(ticker_symbol = t
+              ,ticker_info   = nasdaq$info[nasdaq$Symbol==t]
+              ,data          = t_df[plot_range,]
+              ,emas          = list(ema50[plot_range],ema200[plot_range])
+              ,save     = TRUE
+              ,savename = file.path(path_image,t,paste0(t,"_",ii))
+              )
+  }
+}
+```
+
+
+
+# Find Support and Resistance
+```{r}
+i = 60
+
+# ticker
+t = nasdaq$Symbol[i]
+
+# load data
+t_df = read_nasdaq(file.path(path_database,t))
+#t_df = t_df[500:nrow(t_df),]
+
+# define price levels in increments of 0.1% of the stock price, round depending on size of price
+price_levels = seq(min(t_df$close),max(t_df$high),by=mean(t_df$close)/1000)
+price_levels = round(price_levels,4-(floor(log10(mean(t_df$close)))+1))
+
+# count the frequency of occurence at each price level
+freq_levels = rep(0,length(price_levels))
+for (i in 1:nrow(t_df)) {
+  
+  ind1 = which.min(abs(t_df$low[i]  - price_levels))
+  ind2 = which.min(abs(t_df$high[i] - price_levels))
+  
+  #freq_levels[ind1:ind2] = freq_levels[ind1:ind2] + 1
+  freq_levels[ind1:ind2] = freq_levels[ind1:ind2] + t_df$volume[i]
+  
+}
+
+# smooth the frequency occurance, and find local maximums
+l25   = round(length(freq_levels)/4)
+pad1  = rep(freq_levels[1],l25)
+pad2  = rep(freq_levels[length(freq_levels)],l25)
+x     = smooth(c(pad1,freq_levels,pad2),0.05)      # 0.05 for all stocks, but need to change when analyzing specific time frames
+x     = x[(l25+1):(length(x)-l25)]
+
+sr = local_extrema(x,max=TRUE)
+
+# plot price level frequencies and maximas
+if (TRUE) {
+  
+  # plot price level frequencies
+  plot(price_levels,freq_levels,type="l")
+  
+  # plot the smoothed line and local maximums (support/resistance)
+  lines(price_levels,x,col="red",lwd=2)
+  abline(v=price_levels[sr],col="green")
+  
+}
+
+# plot return graph with markers at the places where the returns are
+if (TRUE) {
+  plot_stock(ticker_symbol     = t
+            ,ticker_info       = nasdaq$info[nasdaq$Symbol==t]
+            ,data              = t_df
+            #,emas              = list(ema50,ema200)
+            ,supportresistance = price_levels[sr]
+            )
+}
+```
